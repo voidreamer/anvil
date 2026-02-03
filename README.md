@@ -4,7 +4,8 @@ Forge your environment — A fast, lightweight package manager for VFX/Animation
 
 Think Rez, but Rust-powered and simpler.
 
-[![Rust CI](https://github.com/voidreamer/anvil/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/voidreamer/anvil/actions/workflows/rust-ci.yml)
+[![CI](https://github.com/voidreamer/anvil/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/voidreamer/anvil/actions/workflows/rust-ci.yml)
+[![Release](https://img.shields.io/github/v/release/voidreamer/anvil?include_prereleases)](https://github.com/voidreamer/anvil/releases)
 
 ## Features
 
