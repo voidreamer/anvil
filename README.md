@@ -1,8 +1,10 @@
-# Pipeline Config
+# 🔨 Anvil
 
-A lightweight environment and configuration manager for VFX/Animation pipelines. Think Rez, but simpler.
+Forge your environment — A fast, lightweight package manager for VFX/Animation pipelines. 
 
-[![Rust CI](https://github.com/voidreamer/pipeline-config/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/voidreamer/pipeline-config/actions/workflows/rust-ci.yml)
+Think Rez, but Rust-powered and simpler.
+
+[![Rust CI](https://github.com/voidreamer/anvil/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/voidreamer/anvil/actions/workflows/rust-ci.yml)
 
 ## Features
 
@@ -18,19 +20,19 @@ A lightweight environment and configuration manager for VFX/Animation pipelines.
 
 ```bash
 # Linux/macOS
-curl -sSL https://github.com/voidreamer/pipeline-config/releases/latest/download/pconfig-linux-x64 -o pconfig
-chmod +x pconfig
-sudo mv pconfig /usr/local/bin/
+curl -sSL https://github.com/voidreamer/anvil/releases/latest/download/anvil-linux-x64 -o anvil
+chmod +x anvil
+sudo mv anvil /usr/local/bin/
 
 # Or with cargo
-cargo install pipeline-config
+cargo install anvil
 ```
 
 ### From source
 
 ```bash
-git clone https://github.com/voidreamer/pipeline-config.git
-cd pipeline-config
+git clone https://github.com/voidreamer/anvil.git
+cd anvil
 cargo install --path .
 ```
 
@@ -63,10 +65,10 @@ commands:
 EOF
 ```
 
-### 2. Configure pconfig
+### 2. Configure anvil
 
 ```bash
-cat > ~/.pconfig.yaml << 'EOF'
+cat > ~/.anvil.yaml << 'EOF'
 package_paths:
   - ~/pipeline-packages
   - /shared/packages
@@ -79,16 +81,16 @@ EOF
 
 ```bash
 # Resolve and print environment
-pconfig env maya-2024
+anvil env maya-2024
 
 # Launch Maya with resolved environment  
-pconfig run maya-2024 -- maya
+anvil run maya-2024 -- maya
 
 # Launch with multiple packages
-pconfig run maya-2024 arnold-7.2 studio-tools -- maya
+anvil run maya-2024 arnold-7.2 studio-tools -- maya
 
 # Interactive shell with packages
-pconfig shell maya-2024 arnold-7.2
+anvil shell maya-2024 arnold-7.2
 ```
 
 ## Package Definition
@@ -133,78 +135,78 @@ requires:
 
 ## Commands
 
-### `pconfig env`
+### `anvil env`
 
 Resolve packages and print environment variables.
 
 ```bash
 # Print resolved environment
-pconfig env maya-2024 arnold-7.2
+anvil env maya-2024 arnold-7.2
 
 # Export format for shell
-pconfig env maya-2024 --export
+anvil env maya-2024 --export
 
 # JSON output
-pconfig env maya-2024 --json
+anvil env maya-2024 --json
 ```
 
-### `pconfig run`
+### `anvil run`
 
 Run a command with resolved environment.
 
 ```bash
 # Run Maya
-pconfig run maya-2024 -- maya -file scene.ma
+anvil run maya-2024 -- maya -file scene.ma
 
 # Run with specific packages
-pconfig run maya-2024 arnold-7.2 yeti-4.0 -- maya
+anvil run maya-2024 arnold-7.2 yeti-4.0 -- maya
 
 # Pass environment variables
-pconfig run maya-2024 -e MAYA_DEBUG=1 -- maya
+anvil run maya-2024 -e MAYA_DEBUG=1 -- maya
 ```
 
-### `pconfig shell`
+### `anvil shell`
 
 Start an interactive shell with resolved environment.
 
 ```bash
 # Bash shell with packages
-pconfig shell maya-2024 arnold-7.2
+anvil shell maya-2024 arnold-7.2
 
 # Specific shell
-pconfig shell maya-2024 --shell zsh
+anvil shell maya-2024 --shell zsh
 ```
 
-### `pconfig list`
+### `anvil list`
 
 List available packages.
 
 ```bash
 # List all packages
-pconfig list
+anvil list
 
 # List versions of a package
-pconfig list maya
+anvil list maya
 
 # Show package details
-pconfig info maya-2024
+anvil info maya-2024
 ```
 
-### `pconfig validate`
+### `anvil validate`
 
 Validate package definitions.
 
 ```bash
 # Validate all packages
-pconfig validate
+anvil validate
 
 # Validate specific package
-pconfig validate maya-2024
+anvil validate maya-2024
 ```
 
 ## Configuration
 
-Global config at `~/.pconfig.yaml`:
+Global config at `~/.anvil.yaml`:
 
 ```yaml
 # Package search paths
@@ -213,7 +215,7 @@ package_paths:
   - /studio/packages
   - ${STUDIO_ROOT}/packages
 
-# Default shell for `pconfig shell`
+# Default shell for `anvil shell`
 default_shell: bash
 
 # Platform overrides
@@ -233,7 +235,7 @@ aliases:
 
 ## Documentation
 
-- [Blender Setup Guide](docs/blender-setup.md) — Using pconfig with Blender and custom addons
+- [Blender Setup Guide](docs/blender-setup.md) — Using anvil with Blender and custom addons
 - [Examples](examples/) — Sample packages and configuration
 
 ## Development

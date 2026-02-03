@@ -1,5 +1,5 @@
-# pconfig configuration example
-# Place at ~/.pconfig.yaml or set PCONFIG_CONFIG env var
+# anvil configuration example
+# Place at ~/.anvil.yaml or set ANVIL_CONFIG env var
 
 # Package search paths (in order of precedence)
 package_paths:

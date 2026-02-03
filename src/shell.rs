@@ -41,13 +41,13 @@ pub fn spawn_shell(shell: &str, env: &HashMap<String, String>) -> Result<()> {
     cmd.env_clear();
     cmd.envs(env);
     
-    // Add pconfig indicator to prompt
+    // Add anvil indicator to prompt
     if let Some(prompt) = env.get("PS1") {
-        let new_prompt = format!("[pconfig] {}", prompt);
+        let new_prompt = format!("[anvil] {}", prompt);
         cmd.env("PS1", new_prompt);
     } else {
         // Set a simple prompt for bash
-        cmd.env("PS1", "[pconfig] \\u@\\h:\\w\\$ ");
+        cmd.env("PS1", "[anvil] \\u@\\h:\\w\\$ ");
     }
     
     // Platform-specific setup

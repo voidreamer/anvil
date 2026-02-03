@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "pipeline_config=info".into()),
+                .unwrap_or_else(|_| "anvil=info".into()),
         )
         .with(tracing_subscriber::fmt::layer().with_target(false))
         .init();

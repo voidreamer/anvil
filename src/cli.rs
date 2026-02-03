@@ -3,10 +3,10 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "pconfig")]
+#[command(name = "anvil")]
 #[command(author = "Alejandro Cabrera <voidreamer@gmail.com>")]
 #[command(version)]
-#[command(about = "Pipeline environment and configuration manager", long_about = None)]
+#[command(about = "Forge your environment 🔨 — Fast package resolution for VFX pipelines", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,

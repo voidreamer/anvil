@@ -6,14 +6,14 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-/// Global configuration for pipeline-config
+/// Global configuration for anvil
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Paths to search for packages
     #[serde(default)]
     pub package_paths: Vec<String>,
     
-    /// Default shell for `pconfig shell`
+    /// Default shell for `anvil shell`
     pub default_shell: Option<String>,
     
     /// Package set aliases
@@ -66,18 +66,18 @@ impl Config {
     /// Get config file path
     pub fn config_path() -> PathBuf {
         // Check environment variable first
-        if let Ok(path) = std::env::var("PCONFIG_CONFIG") {
+        if let Ok(path) = std::env::var("ANVIL_CONFIG") {
             return PathBuf::from(path);
         }
         
         // Check home directory
         if let Some(home) = dirs::home_dir() {
-            let path = home.join(".pconfig.yaml");
+            let path = home.join(".anvil.yaml");
             if path.exists() {
                 return path;
             }
-            // Also check .config/pconfig/config.yaml
-            let xdg_path = home.join(".config/pconfig/config.yaml");
+            // Also check .config/anvil/config.yaml
+            let xdg_path = home.join(".config/anvil/config.yaml");
             if xdg_path.exists() {
                 return xdg_path;
             }
@@ -86,7 +86,7 @@ impl Config {
         // Default to home directory
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".pconfig.yaml")
+            .join(".anvil.yaml")
     }
     
     /// Default package search paths
@@ -94,7 +94,7 @@ impl Config {
         let mut paths = Vec::new();
         
         // Environment variable
-        if let Ok(pkg_path) = std::env::var("PCONFIG_PACKAGES") {
+        if let Ok(pkg_path) = std::env::var("ANVIL_PACKAGES") {
             for p in pkg_path.split(':') {
                 paths.push(p.to_string());
             }
@@ -103,7 +103,7 @@ impl Config {
         // Home directory packages
         if let Some(home) = dirs::home_dir() {
             paths.push(home.join("packages").to_string_lossy().to_string());
-            paths.push(home.join(".local/share/pconfig/packages").to_string_lossy().to_string());
+            paths.push(home.join(".local/share/anvil/packages").to_string_lossy().to_string());
         }
         
         // System paths

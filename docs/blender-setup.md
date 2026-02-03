@@ -1,6 +1,6 @@
-# Using pconfig with Blender
+# Using anvil with Blender
 
-This guide shows how to set up Blender with your studio's custom addons and Python libraries using pconfig.
+This guide shows how to set up Blender with your studio's custom addons and Python libraries using anvil.
 
 ## Directory Structure
 
@@ -99,20 +99,20 @@ environment:
 
 ```bash
 # Run Blender with all studio tools
-pconfig run blender-4.2 studio-blender-tools -- blender
+anvil run blender-4.2 studio-blender-tools -- blender
 
 # Or use an alias (see config below)
-pconfig run studio-blender -- blender
+anvil run studio-blender -- blender
 
 # Open a specific file
-pconfig run studio-blender -- blender /path/to/scene.blend
+anvil run studio-blender -- blender /path/to/scene.blend
 ```
 
 ### Interactive Shell
 
 ```bash
 # Start a shell with Blender environment
-pconfig shell blender-4.2 studio-blender-tools
+anvil shell blender-4.2 studio-blender-tools
 
 # Now you can:
 blender                    # Launch Blender
@@ -123,16 +123,16 @@ python -c "import studio"  # Use studio Python libs
 
 ```bash
 # Get environment as shell exports
-pconfig env blender-4.2 studio-blender-tools --export > /tmp/blender_env.sh
+anvil env blender-4.2 studio-blender-tools --export > /tmp/blender_env.sh
 source /tmp/blender_env.sh
 
 # Or as JSON for programmatic use
-pconfig env studio-blender --json > env.json
+anvil env studio-blender --json > env.json
 ```
 
 ## Configuration
 
-### ~/.pconfig.yaml
+### ~/.anvil.yaml
 
 ```yaml
 # Package search paths
@@ -207,7 +207,7 @@ def unregister():
 4. Test it:
 
 ```bash
-pconfig run blender-4.2 my-addon -- blender
+anvil run blender-4.2 my-addon -- blender
 # Your addon will appear in Edit > Preferences > Add-ons
 ```
 
@@ -217,32 +217,32 @@ pconfig run blender-4.2 my-addon -- blender
 
 ```bash
 # Exact version
-pconfig run blender-4.2 -- blender
+anvil run blender-4.2 -- blender
 
 # Minimum version (4.2 or higher)
-pconfig run blender-4.2+ -- blender
+anvil run blender-4.2+ -- blender
 
 # Version range
-pconfig run blender-4.0..4.2 -- blender
+anvil run blender-4.0..4.2 -- blender
 
 # Multiple options
-pconfig run blender-4.2|4.3 -- blender
+anvil run blender-4.2|4.3 -- blender
 
 # Any version
-pconfig run blender -- blender
+anvil run blender -- blender
 ```
 
 ### Debugging Environment
 
 ```bash
 # See what packages are resolved
-pconfig info blender-4.2
+anvil info blender-4.2
 
 # See full environment
-pconfig env blender-4.2 studio-blender-tools
+anvil env blender-4.2 studio-blender-tools
 
 # Validate all packages
-pconfig validate
+anvil validate
 ```
 
 ### Integration with VS Code
@@ -258,7 +258,7 @@ Create `.vscode/settings.json` in your project:
 Generate the env file:
 
 ```bash
-pconfig env studio-blender --export > .env
+anvil env studio-blender --export > .env
 ```
 
 Now VS Code's Python extension will use the correct paths for autocomplete.
