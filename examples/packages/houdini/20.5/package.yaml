@@ -1,0 +1,32 @@
+name: houdini
+version: "20.5"
+description: SideFX Houdini 20.5
+
+requires:
+  - python-3.11
+
+environment:
+  HOUDINI_VERSION: "20.5"
+  HFS: ${PACKAGE_ROOT}
+  PATH: ${HFS}/bin:${PATH}
+  PYTHONPATH: ${HFS}/python/lib/python3.11/site-packages:${PYTHONPATH}
+  HOUDINI_DSO_ERROR: 2
+
+commands:
+  houdini: houdini
+  hython: hython
+  hcustom: hcustom
+  mantra: mantra
+
+variants:
+  - platform: linux
+    environment:
+      HFS: /opt/hfs20.5
+      LD_LIBRARY_PATH: ${HFS}/dsolib:${LD_LIBRARY_PATH}
+  - platform: macos
+    environment:
+      HFS: /Applications/Houdini/Houdini20.5/Frameworks/Houdini.framework/Versions/20.5/Resources
+      DYLD_LIBRARY_PATH: ${HFS}/../Libraries:${DYLD_LIBRARY_PATH}
+  - platform: windows
+    environment:
+      HFS: C:/Program Files/Side Effects Software/Houdini 20.5

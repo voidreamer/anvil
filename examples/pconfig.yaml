@@ -1,0 +1,40 @@
+# Example pconfig.yaml
+# Place at ~/.pconfig.yaml or set PCONFIG_CONFIG environment variable
+
+# Package search paths (in order of priority)
+package_paths:
+  - ~/packages                    # Personal packages
+  - ~/projects/pipeline/packages  # Project packages
+  - /studio/packages              # Shared studio packages
+
+# Default shell for `pconfig shell`
+default_shell: bash
+
+# Aliases for common package combinations
+aliases:
+  # Animation setup
+  anim: 
+    - blender-4.2
+    - studio-tools
+  
+  # Lighting setup
+  light:
+    - blender-4.2
+    - studio-tools
+  
+  # Houdini FX
+  fx:
+    - houdini-20.5
+    - studio-tools
+
+# Platform-specific overrides
+platform:
+  linux:
+    package_paths:
+      - /mnt/studio/packages
+  macos:
+    package_paths:
+      - /Volumes/Studio/packages
+  windows:
+    package_paths:
+      - P:/packages

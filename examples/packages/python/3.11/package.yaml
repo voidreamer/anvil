@@ -1,0 +1,23 @@
+name: python
+version: "3.11"
+description: Python 3.11
+
+environment:
+  PYTHON_VERSION: "3.11"
+  PATH: ${PACKAGE_ROOT}/bin:${PATH}
+
+commands:
+  python: python3.11
+  python3: python3.11
+  pip: pip3.11
+
+variants:
+  - platform: linux
+    environment:
+      PATH: /usr/bin:${PATH}
+  - platform: macos
+    environment:
+      PATH: /opt/homebrew/bin:/usr/local/bin:${PATH}
+  - platform: windows
+    environment:
+      PATH: C:/Python311:${PATH}

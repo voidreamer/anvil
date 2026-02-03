@@ -1,0 +1,54 @@
+[package]
+name = "pipeline-config"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alejandro Cabrera <voidreamer@gmail.com>"]
+description = "A lightweight environment and configuration manager for VFX/Animation pipelines"
+license = "MIT"
+repository = "https://github.com/voidreamer/pipeline-config"
+keywords = ["vfx", "pipeline", "environment", "rez", "config"]
+categories = ["command-line-utilities", "config"]
+readme = "README.md"
+
+[[bin]]
+name = "pconfig"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4.4", features = ["derive", "env"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utils
+directories = "5.0"
+shellexpand = "3.1"
+which = "6.0"
+indexmap = { version = "2.0", features = ["serde"] }
+semver = { version = "1.0", features = ["serde"] }
+regex = "1.10"
+
+# Cross-platform
+cfg-if = "1.0"
+
+[dev-dependencies]
+tempfile = "3.10"
+assert_cmd = "2.0"
+predicates = "3.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
