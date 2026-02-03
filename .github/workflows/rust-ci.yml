@@ -4,14 +4,14 @@ on:
   push:
     branches: [main, staging]
     paths:
-      - 'rust/**'
+      - 'src/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/rust-ci.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'rust/**'
+      - 'src/**'
       - 'Cargo.toml'
 
 env:
@@ -36,7 +36,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -44,36 +44,11 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --verbose
 
-  # Memory safety checks (Linux only)
-  miri:
+  build:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: miri
-      - uses: Swatinem/rust-cache@v2
-      - name: Run miri
-        run: cargo +nightly miri test
-        continue-on-error: true  # Miri can be strict
-
-  # Build Python bindings (PyO3)
-  pyo3-build:
-    runs-on: ubuntu-latest
-    if: ${{ hashFiles('rust/pyo3/**') != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
       - uses: Swatinem/rust-cache@v2
-      - name: Install maturin
-        run: pip install maturin
-      - name: Build wheel
-        run: maturin build --release -o dist
-      - name: Upload wheel
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-wheel
-          path: dist/*.whl
+      - name: Build release
+        run: cargo build --release

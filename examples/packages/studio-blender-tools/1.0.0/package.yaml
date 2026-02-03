@@ -1,0 +1,17 @@
+name: studio-blender-tools
+version: 1.0.0
+description: Studio Blender addons and tools
+
+requires:
+  - blender-4.2+
+  - studio-python-1.0+
+
+environment:
+  # Add our addons to Blender's script path
+  BLENDER_USER_SCRIPTS: ${PACKAGE_ROOT}
+  
+  # Also add to PYTHONPATH for direct imports
+  PYTHONPATH: ${PACKAGE_ROOT}/addons:${PYTHONPATH:-}
+  
+  # Studio tool settings
+  STUDIO_BLENDER_TOOLS: ${PACKAGE_ROOT}

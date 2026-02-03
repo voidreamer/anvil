@@ -1,0 +1,20 @@
+name: blender
+version: "4.3"
+description: Blender 4.3
+
+environment:
+  BLENDER_VERSION: "4.3"
+  PATH: ${BLENDER_HOME:-/opt/blender/4.3}:${PATH}
+
+variants:
+  - platform: macos
+    environment:
+      BLENDER_HOME: /Applications/Blender.app/Contents/MacOS
+      BLENDER_RESOURCES: /Applications/Blender.app/Contents/Resources/4.3
+  
+  - platform: linux
+    environment:
+      BLENDER_HOME: /opt/blender/4.3
+
+commands:
+  blender: ${BLENDER_HOME}/blender

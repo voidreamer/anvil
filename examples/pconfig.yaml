@@ -1,40 +1,51 @@
-# Example pconfig.yaml
-# Place at ~/.pconfig.yaml or set PCONFIG_CONFIG environment variable
+# pconfig configuration example
+# Place at ~/.pconfig.yaml or set PCONFIG_CONFIG env var
 
-# Package search paths (in order of priority)
+# Package search paths (in order of precedence)
 package_paths:
-  - ~/packages                    # Personal packages
-  - ~/projects/pipeline/packages  # Project packages
-  - /studio/packages              # Shared studio packages
-
-# Default shell for `pconfig shell`
-default_shell: bash
+  # Local development packages (highest priority)
+  - ~/packages
+  
+  # Project-specific packages
+  - ${PROJECT_ROOT:-}/packages
+  
+  # Studio shared packages
+  - /studio/packages
+  
+  # Example packages from this repo (for testing)
+  - ./examples/packages
 
 # Aliases for common package combinations
 aliases:
-  # Animation setup
-  anim: 
+  # Blender production setup
+  studio-blender:
     - blender-4.2
-    - studio-tools
+    - studio-blender-tools
+    - studio-python
   
-  # Lighting setup
-  light:
-    - blender-4.2
-    - studio-tools
+  # Blender dev/testing (latest version)
+  studio-blender-dev:
+    - blender-4.3
+    - studio-blender-tools
+    - studio-python
   
-  # Houdini FX
-  fx:
-    - houdini-20.5
-    - studio-tools
+  # Just Python libs (for scripting)
+  studio-py:
+    - studio-python
+
+# Default shell for interactive sessions
+default_shell: /bin/zsh
 
 # Platform-specific overrides
 platform:
-  linux:
-    package_paths:
-      - /mnt/studio/packages
   macos:
     package_paths:
       - /Volumes/Studio/packages
+  
+  linux:
+    package_paths:
+      - /mnt/studio/packages
+  
   windows:
     package_paths:
-      - P:/packages
+      - S:/packages

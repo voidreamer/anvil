@@ -1,0 +1,8 @@
+name: studio-python
+version: 1.0.0
+description: Core Python libraries for studio pipeline
+
+environment:
+  PYTHONPATH: ${PACKAGE_ROOT}/python:${PYTHONPATH:-}
+  STUDIO_ROOT: ${PACKAGE_ROOT}
+  STUDIO_CONFIG: ${HOME}/.studio/config.yaml

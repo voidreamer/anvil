@@ -231,6 +231,11 @@ aliases:
   maya-light: [maya-2024, arnold-7.2, light-tools]
 ```
 
+## Documentation
+
+- [Blender Setup Guide](docs/blender-setup.md) — Using pconfig with Blender and custom addons
+- [Examples](examples/) — Sample packages and configuration
+
 ## Development
 
 ```bash

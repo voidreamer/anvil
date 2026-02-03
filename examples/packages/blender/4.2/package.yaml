@@ -1,27 +1,24 @@
 name: blender
 version: "4.2"
-description: Blender 4.2 - Free 3D creation suite
-
-requires:
-  - python-3.11
+description: Blender 4.2 LTS
 
 environment:
   BLENDER_VERSION: "4.2"
-  BLENDER_USER_SCRIPTS: ${HOME}/.config/blender/4.2/scripts
-  PATH: ${PACKAGE_ROOT}/bin:${PATH}
-  PYTHONPATH: ${PACKAGE_ROOT}/scripts:${PYTHONPATH}
-
-commands:
-  blender: blender
-  blender-thumbnailer: blender-thumbnailer
+  PATH: ${BLENDER_HOME:-/opt/blender/4.2}:${PATH}
 
 variants:
-  - platform: linux
-    environment:
-      BLENDER_SYSTEM_SCRIPTS: /usr/share/blender/4.2/scripts
   - platform: macos
     environment:
-      BLENDER_SYSTEM_SCRIPTS: /Applications/Blender.app/Contents/Resources/4.2/scripts
+      BLENDER_HOME: /Applications/Blender.app/Contents/MacOS
+      BLENDER_RESOURCES: /Applications/Blender.app/Contents/Resources/4.2
+  
+  - platform: linux
+    environment:
+      BLENDER_HOME: /opt/blender/4.2
+  
   - platform: windows
     environment:
-      BLENDER_SYSTEM_SCRIPTS: C:/Program Files/Blender Foundation/Blender 4.2/4.2/scripts
+      BLENDER_HOME: C:/Program Files/Blender Foundation/Blender 4.2
+
+commands:
+  blender: ${BLENDER_HOME}/blender
