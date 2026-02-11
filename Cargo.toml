@@ -1,6 +1,6 @@
 [package]
 name = "anvil-pckm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Alejandro Cabrera <voidreamer@gmail.com>"]
 description = "A lightweight environment and configuration manager for VFX/Animation pipelines"
