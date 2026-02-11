@@ -17,24 +17,8 @@ Think Rez, but Rust-powered and simpler.
 
 ## Installation
 
-### From releases
-
 ```bash
-# Linux/macOS
-curl -sSL https://github.com/voidreamer/anvil/releases/latest/download/anvil-linux-x64 -o anvil
-chmod +x anvil
-sudo mv anvil /usr/local/bin/
-
-# Or with cargo
-cargo install anvil
-```
-
-### From source
-
-```bash
-git clone https://github.com/voidreamer/anvil.git
-cd anvil
-cargo install --path .
+cargo install anvil-pckm
 ```
 
 ## Quick Start
