@@ -99,8 +99,16 @@ fn cmd_run(
     if command.is_empty() {
         anyhow::bail!("No command specified");
     }
-    
-    let status = Command::new(&command[0])
+
+    // Resolve command alias: if command[0] matches a `commands:` key
+    // in any resolved package, substitute it with the full path.
+    let commands_map = resolved.commands();
+    let executable = commands_map
+        .get(&command[0])
+        .cloned()
+        .unwrap_or_else(|| command[0].clone());
+
+    let status = Command::new(&executable)
         .args(&command[1..])
         .envs(&env)
         .status()?;
@@ -167,7 +175,13 @@ fn cmd_info(config: &Config, package: &str) -> Result<()> {
             println!("  {}: {}", key, value);
         }
     }
-    
+    if !pkg.commands.is_empty() {
+        println!("Commands:");
+        for (alias, target) in &pkg.commands {
+            println!("  {}: {}", alias, target);
+        }
+    }
+
     Ok(())
 }
 

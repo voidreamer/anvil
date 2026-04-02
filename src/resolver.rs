@@ -32,6 +32,24 @@ impl ResolvedPackages {
     pub fn packages(&self) -> &[Package] {
         &self.packages
     }
+
+    /// Build a merged command alias map from all resolved packages.
+    ///
+    /// Command values are expanded against the resolved environment so that
+    /// references like `${PACKAGE_ROOT}` and `${PATH}` resolve to real paths.
+    pub fn commands(&self) -> HashMap<String, String> {
+        let env = self.environment();
+        let mut commands = HashMap::new();
+
+        for package in &self.packages {
+            for (alias, target) in &package.commands {
+                let expanded = package.expand_env_value(target, &env);
+                commands.insert(alias.clone(), expanded);
+            }
+        }
+
+        commands
+    }
 }
 
 /// Package resolver
