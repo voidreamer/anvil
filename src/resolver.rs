@@ -54,64 +54,77 @@ impl Resolver {
         Ok(resolver)
     }
     
-    /// Scan package paths and load all packages
+    /// Scan package paths and load all packages.
+    ///
+    /// Supports two layouts:
+    ///
+    /// 1. **Flat files** — YAML files directly in the package path:
+    ///    `{package_path}/maya-2026.yaml`
+    ///    The file must contain `name` and `version` fields.
+    ///
+    /// 2. **Nested directories** — the original `{name}/{version}/package.yaml` layout:
+    ///    `{package_path}/maya/2026/package.yaml`
     fn scan_packages(&mut self) -> Result<()> {
         for base_path in self.config.all_package_paths() {
             debug!("Scanning packages in {:?}", base_path);
-            
+
             if !base_path.exists() {
                 continue;
             }
-            
-            // Iterate over package directories
+
             for entry in std::fs::read_dir(&base_path)? {
                 let entry = entry?;
-                let pkg_dir = entry.path();
-                
-                if !pkg_dir.is_dir() {
-                    continue;
-                }
-                
-                let pkg_name = pkg_dir.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|s| s.to_string());
-                
-                let pkg_name = match pkg_name {
-                    Some(n) => n,
-                    None => continue,
-                };
-                
-                // Iterate over versions
-                for version_entry in std::fs::read_dir(&pkg_dir)? {
-                    let version_entry = version_entry?;
-                    let version_dir = version_entry.path();
-                    
-                    if !version_dir.is_dir() {
-                        continue;
-                    }
-                    
-                    // Check for package.yaml
-                    let package_file = version_dir.join("package.yaml");
-                    if !package_file.exists() {
-                        continue;
-                    }
-                    
-                    match Package::load(&version_dir) {
-                        Ok(pkg) => {
-                            debug!("Loaded package: {}-{}", pkg.name, pkg.version);
-                            self.package_cache
-                                .entry(pkg.name.clone())
-                                .or_default()
-                                .insert(pkg.version.clone(), pkg);
+                let path = entry.path();
+
+                if path.is_file() {
+                    // Flat file: load any .yaml / .yml file directly
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if ext == "yaml" || ext == "yml" {
+                        match Package::load_from_file(&path, None) {
+                            Ok(pkg) => {
+                                debug!("Loaded package (flat): {}-{}", pkg.name, pkg.version);
+                                self.package_cache
+                                    .entry(pkg.name.clone())
+                                    .or_default()
+                                    .insert(pkg.version.clone(), pkg);
+                            }
+                            Err(e) => {
+                                warn!("Failed to load package {:?}: {}", path, e);
+                            }
                         }
-                        Err(e) => {
-                            warn!("Failed to load package {:?}: {}", version_dir, e);
+                    }
+                } else if path.is_dir() {
+                    // Nested directory: {name}/{version}/package.yaml
+                    for version_entry in std::fs::read_dir(&path)? {
+                        let version_entry = version_entry?;
+                        let version_dir = version_entry.path();
+
+                        if !version_dir.is_dir() {
+                            continue;
+                        }
+
+                        let package_file = version_dir.join("package.yaml");
+                        if !package_file.exists() {
+                            continue;
+                        }
+
+                        match Package::load(&version_dir) {
+                            Ok(pkg) => {
+                                debug!("Loaded package (nested): {}-{}", pkg.name, pkg.version);
+                                self.package_cache
+                                    .entry(pkg.name.clone())
+                                    .or_default()
+                                    .insert(pkg.version.clone(), pkg);
+                            }
+                            Err(e) => {
+                                warn!("Failed to load package {:?}: {}", version_dir, e);
+                            }
                         }
                     }
                 }
             }
         }
-        
+
         info!("Loaded {} packages", self.package_cache.len());
         Ok(())
     }

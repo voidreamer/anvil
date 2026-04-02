@@ -55,25 +55,38 @@ pub struct PackageVariant {
 }
 
 impl Package {
-    /// Load a package from a directory
+    /// Load a package from a directory containing package.yaml
     pub fn load(path: &Path) -> Result<Self> {
         let package_file = path.join("package.yaml");
-        
+
         if !package_file.exists() {
             anyhow::bail!("Package file not found: {:?}", package_file);
         }
-        
-        let content = std::fs::read_to_string(&package_file)
-            .with_context(|| format!("Failed to read package: {:?}", package_file))?;
-        
+
+        Self::load_from_file(&package_file, Some(path))
+    }
+
+    /// Load a package from a YAML file directly.
+    /// If `root` is None, the parent directory of the file is used as the package root.
+    pub fn load_from_file(file_path: &Path, root: Option<&Path>) -> Result<Self> {
+        if !file_path.exists() {
+            anyhow::bail!("Package file not found: {:?}", file_path);
+        }
+
+        let content = std::fs::read_to_string(file_path)
+            .with_context(|| format!("Failed to read package: {:?}", file_path))?;
+
         let mut package: Package = serde_yaml::from_str(&content)
-            .with_context(|| format!("Failed to parse package: {:?}", package_file))?;
-        
-        package.root = path.to_path_buf();
-        
+            .with_context(|| format!("Failed to parse package: {:?}", file_path))?;
+
+        package.root = root
+            .map(|p| p.to_path_buf())
+            .or_else(|| file_path.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+
         // Apply variant for current platform
         package.apply_current_variant();
-        
+
         Ok(package)
     }
     
@@ -107,31 +120,38 @@ impl Package {
         }
     }
     
-    /// Expand environment variables in a value
+    /// Expand environment variables and tilde in a value
     pub fn expand_env_value(&self, value: &str, env: &HashMap<String, String>) -> String {
         let mut result = value.to_string();
-        
+
         // Replace ${PACKAGE_ROOT} with actual path
         result = result.replace("${PACKAGE_ROOT}", &self.root.to_string_lossy());
-        
+
         // Replace ${VERSION} with package version
         result = result.replace("${VERSION}", &self.version);
-        
+
         // Replace ${NAME} with package name
         result = result.replace("${NAME}", &self.name);
-        
+
         // Replace other ${VAR} references
         for (key, val) in env {
             result = result.replace(&format!("${{{}}}", key), val);
         }
-        
+
         // Replace remaining ${VAR} with current environment
         let re = regex::Regex::new(r"\$\{([^}]+)\}").unwrap();
         result = re.replace_all(&result, |caps: &regex::Captures| {
             let var = &caps[1];
             std::env::var(var).unwrap_or_default()
         }).to_string();
-        
+
+        // Expand ~ to home directory
+        if result.starts_with("~/") {
+            if let Ok(home) = std::env::var("HOME") {
+                result = format!("{}{}", home, &result[1..]);
+            }
+        }
+
         result
     }
     
