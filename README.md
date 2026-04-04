@@ -19,7 +19,7 @@ A fast, lightweight environment resolver for VFX and animation pipelines. Think 
 ## Installation
 
 ```bash
-cargo install anvil-pckm
+cargo install anvil-env
 ```
 
 ## Quick Start
