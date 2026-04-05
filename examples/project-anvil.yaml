@@ -1,0 +1,28 @@
+# Per-project config example
+# Place as .anvil.yaml in your project root.
+# Anvil walks up from CWD looking for this file and merges it with
+# the global config (~/.anvil.yaml).
+
+# Project-local packages (prepended to global paths, so they win)
+package_paths:
+  - ./packages
+
+# Project-specific aliases
+aliases:
+  show-tools:
+    - maya-2024
+    - studio-python
+
+# Override the default shell for this project
+# default_shell: /bin/bash
+
+# Restrict which packages are visible in this project
+# filters:
+#   include:
+#     - "maya-*"
+#     - "studio-*"
+
+# Project hooks (run before global hooks)
+# hooks:
+#   pre_run:
+#     - echo "[$(basename $PWD)] launching $0"

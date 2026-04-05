@@ -1,8 +1,12 @@
-# Using anvil with Blender
+# Using Anvil with Blender
 
-This guide shows how to set up Blender with your studio's custom addons and Python libraries using anvil.
+This guide shows how to set up Blender with your studio's custom addons and Python libraries using Anvil.
 
 ## Directory Structure
+
+Anvil supports two package layouts. This guide uses the **nested directory** layout because Blender packages typically bundle addon files, but simple wrapper packages can use **flat YAML files** instead (see [Flat-file alternative](#flat-file-alternative) below).
+
+### Nested layout (recommended for packages with bundled files)
 
 ```
 ~/packages/
@@ -244,6 +248,31 @@ anvil env blender-4.2 studio-blender-tools
 # Validate all packages
 anvil validate
 ```
+
+### Flat-file alternative
+
+If a package is just environment setup with no bundled files, you can use a flat YAML file instead of a nested directory. For example, a simple Blender wrapper:
+
+```yaml
+# ~/packages/blender-4.2.yaml
+name: blender
+version: "4.2"
+description: Blender 4.2 LTS
+
+environment:
+  BLENDER_VERSION: "4.2"
+  PATH: ${BLENDER_HOME:-/opt/blender/4.2}:${PATH}
+
+variants:
+  - platform: macos
+    environment:
+      BLENDER_HOME: /Applications/Blender.app/Contents/MacOS
+
+commands:
+  blender: ${BLENDER_HOME}/blender
+```
+
+Flat files and nested directories can coexist in the same package path. Use nested directories when the package bundles scripts, addons, or other files that need `${PACKAGE_ROOT}`.
 
 ### Integration with VS Code
 

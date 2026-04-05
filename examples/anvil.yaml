@@ -1,0 +1,85 @@
+# Anvil configuration example
+# Place at ~/.anvil.yaml, ~/.config/anvil/config.yaml, or set ANVIL_CONFIG env var
+
+# Package search paths (in order of precedence)
+# Supports ${VAR} expansion and ~/ tilde expansion
+package_paths:
+  # Local development packages (highest priority)
+  - ~/packages
+  
+  # Project-specific packages
+  - ${PROJECT_ROOT:-}/packages
+  
+  # Studio shared packages
+  - /studio/packages
+  
+  # Example packages from this repo (for testing)
+  - ./examples/packages
+
+# Named package sets for common workflows
+# Use as: anvil run studio-blender -- blender
+aliases:
+  # Blender production setup
+  studio-blender:
+    - blender-4.2
+    - studio-blender-tools
+    - studio-python
+  
+  # Blender dev/testing (latest version)
+  studio-blender-dev:
+    - blender-4.3
+    - studio-blender-tools
+    - studio-python
+  
+  # Houdini FX setup
+  studio-houdini:
+    - houdini-20.5
+    - studio-python
+
+  # Just Python libs (for scripting)
+  studio-py:
+    - studio-python
+
+# Default shell for interactive sessions
+default_shell: /bin/zsh
+
+# Platform-specific overrides
+# These extend (not replace) the base package_paths list
+platform:
+  macos:
+    package_paths:
+      - /Volumes/Studio/packages
+  
+  linux:
+    package_paths:
+      - /mnt/studio/packages
+  
+  windows:
+    package_paths:
+      - S:/packages
+
+# Lifecycle hooks (optional)
+# Shell commands run at specific points. If a pre-hook fails, the
+# operation is aborted.
+# hooks:
+#   pre_resolve:
+#     - echo "Resolving packages..."
+#   post_resolve:
+#     - /studio/scripts/log_resolution.sh
+#   pre_run:
+#     - /studio/scripts/check_license.sh
+#   post_run:
+#     - /studio/scripts/usage_tracking.sh
+
+# Package filters (optional)
+# When include is set, only matching packages are visible.
+# Exclude is applied after include. Patterns use glob syntax (*, ?).
+# filters:
+#   include:
+#     - "blender*"
+#     - "houdini*"
+#     - "studio-*"
+#     - "python*"
+#   exclude:
+#     - "*-dev"
+#     - "test-*"

@@ -1,0 +1,679 @@
+use assert_cmd::Command;
+use predicates::prelude::*;
+use std::fs;
+use tempfile::TempDir;
+
+/// Helper: create a temp directory with packages and an anvil config pointing
+/// to it.  Returns (TempDir, config_path).
+fn setup_env() -> (TempDir, String) {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    // python-3.11
+    let python_dir = pkg_dir.join("python/3.11");
+    fs::create_dir_all(&python_dir).unwrap();
+    fs::write(
+        python_dir.join("package.yaml"),
+        r#"
+name: python
+version: "3.11"
+description: Python 3.11
+environment:
+  PYTHON_VERSION: "3.11"
+  PATH: ${PACKAGE_ROOT}/bin:${PATH}
+commands:
+  python: ${PACKAGE_ROOT}/bin/python3.11
+"#,
+    )
+    .unwrap();
+
+    // maya-2024 (flat file)
+    fs::write(
+        pkg_dir.join("maya-2024.yaml"),
+        r#"
+name: maya
+version: "2024"
+description: Autodesk Maya 2024
+requires:
+  - python-3.11
+environment:
+  MAYA_VERSION: "2024"
+  MAYA_LOCATION: /usr/autodesk/maya2024
+  PATH: ${MAYA_LOCATION}/bin:${PATH}
+commands:
+  maya: ${MAYA_LOCATION}/bin/maya
+"#,
+    )
+    .unwrap();
+
+    // studio-blender-tools-1.0.0 (hyphenated name)
+    let sbt_dir = pkg_dir.join("studio-blender-tools/1.0.0");
+    fs::create_dir_all(&sbt_dir).unwrap();
+    fs::write(
+        sbt_dir.join("package.yaml"),
+        r#"
+name: studio-blender-tools
+version: "1.0.0"
+description: Studio Blender addons
+environment:
+  STUDIO_TOOLS: enabled
+"#,
+    )
+    .unwrap();
+
+    // config
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!(
+            "package_paths:\n  - {}\naliases:\n  maya-full: [maya-2024]\n",
+            pkg_dir.display()
+        ),
+    )
+    .unwrap();
+
+    let config_str = config_path.to_string_lossy().to_string();
+    (dir, config_str)
+}
+
+fn anvil(config: &str) -> Command {
+    let mut cmd = Command::cargo_bin("anvil").unwrap();
+    cmd.env("ANVIL_CONFIG", config);
+    cmd.env("RUST_LOG", "anvil=error"); // suppress info logs in tests
+    cmd
+}
+
+// ---- anvil list ----
+
+#[test]
+fn list_all_packages() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("maya"))
+        .stdout(predicate::str::contains("python"))
+        .stdout(predicate::str::contains("studio-blender-tools"));
+}
+
+#[test]
+fn list_versions() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["list", "maya"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2024"));
+}
+
+// ---- anvil info ----
+
+#[test]
+fn info_simple() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["info", "maya-2024"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Name: maya"))
+        .stdout(predicate::str::contains("Version: 2024"))
+        .stdout(predicate::str::contains("python-3.11"));
+}
+
+#[test]
+fn info_hyphenated_name() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["info", "studio-blender-tools-1.0.0"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Name: studio-blender-tools"));
+}
+
+// ---- anvil env ----
+
+#[test]
+fn env_key_value() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["env", "maya-2024"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MAYA_VERSION=2024"))
+        .stdout(predicate::str::contains("PYTHON_VERSION=3.11"));
+}
+
+#[test]
+fn env_json() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["env", "maya-2024", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"MAYA_VERSION\""))
+        .stdout(predicate::str::contains("\"2024\""));
+}
+
+#[test]
+fn env_export() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["env", "maya-2024", "--export"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("export MAYA_VERSION=\"2024\""));
+}
+
+// ---- anvil validate ----
+
+#[test]
+fn validate_all() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["validate"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All packages valid!"));
+}
+
+#[test]
+fn validate_single() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["validate", "maya-2024"])
+        .assert()
+        .success();
+}
+
+// ---- alias resolution ----
+
+#[test]
+fn alias_resolves() {
+    let (_dir, cfg) = setup_env();
+    // maya-full alias should resolve maya-2024 (which pulls in python-3.11)
+    anvil(&cfg)
+        .args(["env", "maya-full"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MAYA_VERSION=2024"))
+        .stdout(predicate::str::contains("PYTHON_VERSION=3.11"));
+}
+
+// ---- error cases ----
+
+#[test]
+fn unknown_package_fails() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["env", "nonexistent-1.0"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn run_without_command_fails() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["run", "maya-2024", "--"])
+        .assert()
+        .failure();
+}
+
+// ---- flat file + nested coexistence ----
+
+#[test]
+fn flat_and_nested_coexist() {
+    let (_dir, cfg) = setup_env();
+    // maya is flat, python is nested — both should appear
+    anvil(&cfg)
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("maya"))
+        .stdout(predicate::str::contains("python"));
+}
+
+// ---- per-project config ----
+
+#[test]
+fn project_config_loaded() {
+    let dir = TempDir::new().unwrap();
+    let project_dir = dir.path().join("myproject");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    // Project-local packages
+    let pkg_dir = project_dir.join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    fs::write(
+        pkg_dir.join("localtools-1.0.yaml"),
+        "name: localtools\nversion: \"1.0\"\nenvironment:\n  LOCAL: yes\n",
+    )
+    .unwrap();
+
+    // Project .anvil.yaml
+    fs::write(
+        project_dir.join(".anvil.yaml"),
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+
+    // Empty global config (no packages)
+    let global_cfg = dir.path().join("global.yaml");
+    fs::write(&global_cfg, "package_paths: []\n").unwrap();
+
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("ANVIL_CONFIG", global_cfg.to_str().unwrap())
+        .env("RUST_LOG", "anvil=error")
+        .current_dir(&project_dir)
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("localtools"));
+}
+
+// ---- anvil lock ----
+
+#[test]
+fn lock_creates_lockfile() {
+    let (dir, cfg) = setup_env();
+    let lock_path = dir.path().join("anvil.lock");
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Locked"))
+        .stdout(predicate::str::contains("maya"));
+
+    assert!(lock_path.exists());
+    let content = fs::read_to_string(&lock_path).unwrap();
+    assert!(content.contains("maya"));
+    assert!(content.contains("python"));
+}
+
+#[test]
+fn lock_pins_versions() {
+    let (dir, cfg) = setup_env();
+
+    // Lock maya-2024
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    // Subsequent resolve should use the lockfile
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["env", "maya-2024"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MAYA_VERSION=2024"));
+}
+
+// ---- anvil context ----
+
+#[test]
+fn context_save_and_show() {
+    let (dir, cfg) = setup_env();
+    let ctx_path = dir.path().join("test.ctx.json");
+
+    // Save
+    anvil(&cfg)
+        .args(["context", "save", "maya-2024", "-o", ctx_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Saved context"));
+
+    assert!(ctx_path.exists());
+
+    // Show
+    anvil(&cfg)
+        .args(["context", "show", ctx_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("maya-2024"))
+        .stdout(predicate::str::contains("python-3.11"));
+}
+
+#[test]
+fn context_show_json() {
+    let (dir, cfg) = setup_env();
+    let ctx_path = dir.path().join("test.ctx.json");
+
+    anvil(&cfg)
+        .args(["context", "save", "maya-2024", "-o", ctx_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .args(["context", "show", ctx_path.to_str().unwrap(), "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"MAYA_VERSION\""));
+}
+
+#[test]
+fn context_show_export() {
+    let (dir, cfg) = setup_env();
+    let ctx_path = dir.path().join("test.ctx.json");
+
+    anvil(&cfg)
+        .args(["context", "save", "maya-2024", "-o", ctx_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .args(["context", "show", ctx_path.to_str().unwrap(), "--export"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("export MAYA_VERSION=\"2024\""));
+}
+
+// ---- anvil init ----
+
+#[test]
+fn init_nested() {
+    let dir = TempDir::new().unwrap();
+
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("RUST_LOG", "anvil=error")
+        .current_dir(dir.path())
+        .args(["init", "my-tool", "--version", "2.0"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created my-tool/2.0/package.yaml"));
+
+    let pkg = dir.path().join("my-tool/2.0/package.yaml");
+    assert!(pkg.exists());
+    let content = fs::read_to_string(pkg).unwrap();
+    assert!(content.contains("name: my-tool"));
+    assert!(content.contains("version: \"2.0\""));
+}
+
+#[test]
+fn init_flat() {
+    let dir = TempDir::new().unwrap();
+
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("RUST_LOG", "anvil=error")
+        .current_dir(dir.path())
+        .args(["init", "quick-fix", "--flat"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created quick-fix-1.0.0.yaml"));
+
+    let pkg = dir.path().join("quick-fix-1.0.0.yaml");
+    assert!(pkg.exists());
+    let content = fs::read_to_string(pkg).unwrap();
+    assert!(content.contains("name: quick-fix"));
+}
+
+#[test]
+fn init_refuses_overwrite() {
+    let dir = TempDir::new().unwrap();
+
+    // Create first
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("RUST_LOG", "anvil=error")
+        .current_dir(dir.path())
+        .args(["init", "my-tool"])
+        .assert()
+        .success();
+
+    // Second attempt should fail
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("RUST_LOG", "anvil=error")
+        .current_dir(dir.path())
+        .args(["init", "my-tool"])
+        .assert()
+        .failure();
+}
+
+// ---- anvil completions ----
+
+#[test]
+fn completions_bash() {
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_anvil"));
+}
+
+#[test]
+fn completions_zsh() {
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#compdef anvil"));
+}
+
+// ---- package filters ----
+
+#[test]
+fn filter_include() {
+    let (dir, _) = setup_env();
+    let cfg_path = dir.path().join("filtered.yaml");
+    let pkg_dir = dir.path().join("packages");
+
+    fs::write(
+        &cfg_path,
+        format!(
+            "package_paths:\n  - {}\nfilters:\n  include:\n    - \"maya*\"\n",
+            pkg_dir.display()
+        ),
+    )
+    .unwrap();
+
+    anvil(cfg_path.to_str().unwrap())
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("maya"))
+        .stdout(predicate::str::contains("python").not());
+}
+
+#[test]
+fn filter_exclude() {
+    let (dir, _) = setup_env();
+    let cfg_path = dir.path().join("filtered.yaml");
+    let pkg_dir = dir.path().join("packages");
+
+    fs::write(
+        &cfg_path,
+        format!(
+            "package_paths:\n  - {}\nfilters:\n  exclude:\n    - \"studio-*\"\n",
+            pkg_dir.display()
+        ),
+    )
+    .unwrap();
+
+    anvil(cfg_path.to_str().unwrap())
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("maya"))
+        .stdout(predicate::str::contains("studio-blender-tools").not());
+}
+
+// ---- hooks ----
+
+#[test]
+fn hooks_run_in_order() {
+    let (dir, _) = setup_env();
+    let cfg_path = dir.path().join("hooks.yaml");
+    let pkg_dir = dir.path().join("packages");
+
+    fs::write(
+        &cfg_path,
+        format!(
+            r#"package_paths:
+  - {}
+hooks:
+  pre_run:
+    - echo PRE_RUN
+"#,
+            pkg_dir.display()
+        ),
+    )
+    .unwrap();
+
+    anvil(cfg_path.to_str().unwrap())
+        .args(["run", "python-3.11", "--", "echo", "COMMAND"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRE_RUN"))
+        .stdout(predicate::str::contains("COMMAND"));
+}
+
+#[test]
+fn hook_failure_aborts() {
+    let (dir, _) = setup_env();
+    let cfg_path = dir.path().join("hooks.yaml");
+    let pkg_dir = dir.path().join("packages");
+
+    fs::write(
+        &cfg_path,
+        format!(
+            r#"package_paths:
+  - {}
+hooks:
+  pre_run:
+    - exit 1
+"#,
+            pkg_dir.display()
+        ),
+    )
+    .unwrap();
+
+    anvil(cfg_path.to_str().unwrap())
+        .args(["run", "python-3.11", "--", "echo", "should-not-run"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("should-not-run").not());
+}
+
+// ---- anvil wrap ----
+
+#[test]
+fn wrap_creates_scripts() {
+    let (dir, cfg) = setup_env();
+    let wrap_dir = dir.path().join("wrappers");
+
+    anvil(&cfg)
+        .args(["wrap", "maya-2024", "--dir", wrap_dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrapper"))
+        .stdout(predicate::str::contains("maya"));
+
+    // maya command should exist as a wrapper
+    let maya_wrapper = wrap_dir.join("maya");
+    assert!(maya_wrapper.exists());
+    let content = fs::read_to_string(maya_wrapper).unwrap();
+    assert!(content.contains("anvil run"));
+    assert!(content.contains("maya"));
+}
+
+#[test]
+fn wrap_includes_dependency_commands() {
+    let (dir, cfg) = setup_env();
+    let wrap_dir = dir.path().join("wrappers");
+
+    // maya depends on python, so python commands should be in the wrappers too
+    anvil(&cfg)
+        .args(["wrap", "maya-2024", "--dir", wrap_dir.to_str().unwrap()])
+        .assert()
+        .success();
+
+    assert!(wrap_dir.join("maya").exists());
+    assert!(wrap_dir.join("python").exists());
+}
+
+// ---- anvil publish ----
+
+#[test]
+fn publish_nested() {
+    let (dir, _) = setup_env();
+    let target = dir.path().join("published");
+    fs::create_dir_all(&target).unwrap();
+
+    let src = dir.path().join("packages/python/3.11");
+
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("RUST_LOG", "anvil=error")
+        .args([
+            "publish",
+            target.to_str().unwrap(),
+            "--path",
+            src.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Published python-3.11"));
+
+    assert!(target.join("python/3.11/package.yaml").exists());
+}
+
+#[test]
+fn publish_flat() {
+    let (dir, _) = setup_env();
+    let target = dir.path().join("published");
+    fs::create_dir_all(&target).unwrap();
+
+    let src = dir.path().join("packages/maya-2024.yaml");
+
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("RUST_LOG", "anvil=error")
+        .args([
+            "publish",
+            target.to_str().unwrap(),
+            "--path",
+            src.to_str().unwrap(),
+            "--flat",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Published maya-2024"));
+
+    assert!(target.join("maya-2024.yaml").exists());
+}
+
+#[test]
+fn publish_refuses_overwrite() {
+    let (dir, _) = setup_env();
+    let target = dir.path().join("published");
+    fs::create_dir_all(&target).unwrap();
+
+    let src = dir.path().join("packages/python/3.11");
+
+    // First publish
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("RUST_LOG", "anvil=error")
+        .args(["publish", target.to_str().unwrap(), "--path", src.to_str().unwrap()])
+        .assert()
+        .success();
+
+    // Second should fail
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("RUST_LOG", "anvil=error")
+        .args(["publish", target.to_str().unwrap(), "--path", src.to_str().unwrap()])
+        .assert()
+        .failure();
+}

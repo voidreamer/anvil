@@ -1,0 +1,26 @@
+name: nuke
+version: "15.1"
+description: Foundry Nuke 15.1
+
+requires:
+  - python-3.11
+
+environment:
+  NUKE_VERSION: "${VERSION}"
+  NUKE_PATH: ${PACKAGE_ROOT}:${NUKE_PATH:-}
+  PATH: ${NUKE_HOME}/bin:${PATH}
+
+commands:
+  nuke: ${NUKE_HOME}/Nuke${VERSION}
+  nukex: ${NUKE_HOME}/Nuke${VERSION} --nukex
+
+variants:
+  - platform: linux
+    environment:
+      NUKE_HOME: /usr/local/Nuke${VERSION}v1
+  - platform: macos
+    environment:
+      NUKE_HOME: /Applications/Nuke${VERSION}v1/Nuke${VERSION}v1.app/Contents/MacOS
+  - platform: windows
+    environment:
+      NUKE_HOME: C:/Program Files/Nuke${VERSION}v1

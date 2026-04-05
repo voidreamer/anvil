@@ -35,8 +35,8 @@ pub struct Package {
     #[serde(default)]
     pub variants: Vec<PackageVariant>,
     
-    /// Path to the package root (set after loading)
-    #[serde(skip)]
+    /// Path to the package root (set after loading, omitted from package.yaml)
+    #[serde(default)]
     pub root: PathBuf,
 }
 
@@ -190,41 +190,56 @@ pub enum VersionConstraint {
 }
 
 impl PackageRequest {
-    /// Parse a package request string
+    /// Parse a package request string.
+    ///
+    /// Splits on the last `-` only when the suffix looks like a version (starts
+    /// with an ASCII digit).  This allows hyphenated package names such as
+    /// `studio-blender-tools` to be used without being misinterpreted.
     pub fn parse(s: &str) -> Result<Self> {
-        // Try to split name and version
+        // Try to split name and version on the last '-'
         if let Some(idx) = s.rfind('-') {
             let name = &s[..idx];
             let version_part = &s[idx + 1..];
-            
-            // Parse version constraint
-            let constraint = if version_part.ends_with('+') {
-                VersionConstraint::Minimum(version_part.trim_end_matches('+').to_string())
-            } else if version_part.contains("..") {
-                let parts: Vec<&str> = version_part.split("..").collect();
-                if parts.len() == 2 {
-                    VersionConstraint::Range(parts[0].to_string(), parts[1].to_string())
+
+            // Only treat the suffix as a version when it begins with a digit.
+            // This prevents "studio-blender-tools" from being parsed as
+            // name="studio-blender" version="tools".
+            let starts_with_digit = version_part
+                .chars()
+                .next()
+                .map_or(false, |c| c.is_ascii_digit());
+
+            if starts_with_digit {
+                // Parse version constraint
+                let constraint = if version_part.ends_with('+') {
+                    VersionConstraint::Minimum(version_part.trim_end_matches('+').to_string())
+                } else if version_part.contains("..") {
+                    let parts: Vec<&str> = version_part.split("..").collect();
+                    if parts.len() == 2 {
+                        VersionConstraint::Range(parts[0].to_string(), parts[1].to_string())
+                    } else {
+                        anyhow::bail!("Invalid version range: {}", version_part);
+                    }
+                } else if version_part.contains('|') {
+                    let versions: Vec<String> =
+                        version_part.split('|').map(|s| s.to_string()).collect();
+                    VersionConstraint::OneOf(versions)
                 } else {
-                    anyhow::bail!("Invalid version range: {}", version_part);
-                }
-            } else if version_part.contains('|') {
-                let versions: Vec<String> = version_part.split('|').map(|s| s.to_string()).collect();
-                VersionConstraint::OneOf(versions)
-            } else {
-                VersionConstraint::Exact(version_part.to_string())
-            };
-            
-            Ok(PackageRequest {
-                name: name.to_string(),
-                version_constraint: constraint,
-            })
-        } else {
-            // Just a name, any version
-            Ok(PackageRequest {
-                name: s.to_string(),
-                version_constraint: VersionConstraint::Any,
-            })
+                    VersionConstraint::Exact(version_part.to_string())
+                };
+
+                return Ok(PackageRequest {
+                    name: name.to_string(),
+                    version_constraint: constraint,
+                });
+            }
         }
+
+        // No hyphen, or suffix doesn't look like a version → any version
+        Ok(PackageRequest {
+            name: s.to_string(),
+            version_constraint: VersionConstraint::Any,
+        })
     }
     
     /// Check if a version matches this constraint
@@ -250,7 +265,192 @@ fn version_compare(a: &str, b: &str) -> std::cmp::Ordering {
     if let (Ok(va), Ok(vb)) = (semver::Version::parse(a), semver::Version::parse(b)) {
         return va.cmp(&vb);
     }
-    
+
     // Fall back to string comparison
     a.cmp(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- PackageRequest::parse ----
+
+    #[test]
+    fn parse_exact_version() {
+        let req = PackageRequest::parse("maya-2024").unwrap();
+        assert_eq!(req.name, "maya");
+        assert!(matches!(req.version_constraint, VersionConstraint::Exact(v) if v == "2024"));
+    }
+
+    #[test]
+    fn parse_semver_exact() {
+        let req = PackageRequest::parse("arnold-7.2").unwrap();
+        assert_eq!(req.name, "arnold");
+        assert!(matches!(req.version_constraint, VersionConstraint::Exact(v) if v == "7.2"));
+    }
+
+    #[test]
+    fn parse_minimum_version() {
+        let req = PackageRequest::parse("maya-2024+").unwrap();
+        assert_eq!(req.name, "maya");
+        assert!(matches!(req.version_constraint, VersionConstraint::Minimum(v) if v == "2024"));
+    }
+
+    #[test]
+    fn parse_range_version() {
+        let req = PackageRequest::parse("maya-2024..2025").unwrap();
+        assert_eq!(req.name, "maya");
+        assert!(matches!(req.version_constraint, VersionConstraint::Range(a, b) if a == "2024" && b == "2025"));
+    }
+
+    #[test]
+    fn parse_oneof_version() {
+        let req = PackageRequest::parse("python-3.10|3.11").unwrap();
+        assert_eq!(req.name, "python");
+        assert!(matches!(req.version_constraint, VersionConstraint::OneOf(ref v) if v == &["3.10", "3.11"]));
+    }
+
+    #[test]
+    fn parse_any_version() {
+        let req = PackageRequest::parse("maya").unwrap();
+        assert_eq!(req.name, "maya");
+        assert!(matches!(req.version_constraint, VersionConstraint::Any));
+    }
+
+    #[test]
+    fn parse_hyphenated_name_no_version() {
+        let req = PackageRequest::parse("studio-blender-tools").unwrap();
+        assert_eq!(req.name, "studio-blender-tools");
+        assert!(matches!(req.version_constraint, VersionConstraint::Any));
+    }
+
+    #[test]
+    fn parse_hyphenated_name_with_version() {
+        let req = PackageRequest::parse("studio-blender-tools-1.0.0").unwrap();
+        assert_eq!(req.name, "studio-blender-tools");
+        assert!(matches!(req.version_constraint, VersionConstraint::Exact(v) if v == "1.0.0"));
+    }
+
+    #[test]
+    fn parse_hyphenated_name_with_minimum() {
+        let req = PackageRequest::parse("studio-python-1.0+").unwrap();
+        assert_eq!(req.name, "studio-python");
+        assert!(matches!(req.version_constraint, VersionConstraint::Minimum(v) if v == "1.0"));
+    }
+
+    #[test]
+    fn parse_double_hyphen_no_version() {
+        let req = PackageRequest::parse("my-cool-package").unwrap();
+        assert_eq!(req.name, "my-cool-package");
+        assert!(matches!(req.version_constraint, VersionConstraint::Any));
+    }
+
+    // ---- Version matching ----
+
+    #[test]
+    fn match_exact() {
+        let req = PackageRequest::parse("maya-2024").unwrap();
+        assert!(req.matches("2024"));
+        assert!(!req.matches("2025"));
+    }
+
+    #[test]
+    fn match_minimum() {
+        let req = PackageRequest::parse("maya-2024+").unwrap();
+        assert!(req.matches("2024"));
+        assert!(req.matches("2025"));
+        assert!(!req.matches("2023"));
+    }
+
+    #[test]
+    fn match_range() {
+        let req = PackageRequest::parse("maya-2024..2025").unwrap();
+        assert!(req.matches("2024"));
+        assert!(req.matches("2025"));
+        assert!(!req.matches("2023"));
+        assert!(!req.matches("2026"));
+    }
+
+    #[test]
+    fn match_oneof() {
+        let req = PackageRequest::parse("python-3.10|3.11").unwrap();
+        assert!(req.matches("3.10"));
+        assert!(req.matches("3.11"));
+        assert!(!req.matches("3.9"));
+    }
+
+    #[test]
+    fn match_any() {
+        let req = PackageRequest::parse("maya").unwrap();
+        assert!(req.matches("2024"));
+        assert!(req.matches("2025"));
+        assert!(req.matches("anything"));
+    }
+
+    #[test]
+    fn match_semver_minimum() {
+        let req = PackageRequest::parse("studio-python-1.0.0+").unwrap();
+        assert!(req.matches("1.0.0"));
+        assert!(req.matches("1.2.0"));
+        assert!(req.matches("2.0.0"));
+        assert!(!req.matches("0.9.0"));
+    }
+
+    // ---- Variable expansion ----
+
+    #[test]
+    fn expand_package_root() {
+        let pkg = Package {
+            name: "test".into(),
+            version: "1.0".into(),
+            description: None,
+            requires: vec![],
+            environment: IndexMap::new(),
+            commands: HashMap::new(),
+            variants: vec![],
+            root: PathBuf::from("/opt/test/1.0"),
+        };
+        let env = HashMap::new();
+        assert_eq!(
+            pkg.expand_env_value("${PACKAGE_ROOT}/bin", &env),
+            "/opt/test/1.0/bin"
+        );
+    }
+
+    #[test]
+    fn expand_version_and_name() {
+        let pkg = Package {
+            name: "maya".into(),
+            version: "2024".into(),
+            description: None,
+            requires: vec![],
+            environment: IndexMap::new(),
+            commands: HashMap::new(),
+            variants: vec![],
+            root: PathBuf::from("/opt/maya"),
+        };
+        let env = HashMap::new();
+        assert_eq!(pkg.expand_env_value("${NAME}-${VERSION}", &env), "maya-2024");
+    }
+
+    #[test]
+    fn expand_from_env_map() {
+        let pkg = Package {
+            name: "test".into(),
+            version: "1.0".into(),
+            description: None,
+            requires: vec![],
+            environment: IndexMap::new(),
+            commands: HashMap::new(),
+            variants: vec![],
+            root: PathBuf::from("/tmp"),
+        };
+        let mut env = HashMap::new();
+        env.insert("HFS".into(), "/opt/houdini".into());
+        assert_eq!(
+            pkg.expand_env_value("${HFS}/bin:${HFS}/python", &env),
+            "/opt/houdini/bin:/opt/houdini/python"
+        );
+    }
 }

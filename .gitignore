@@ -82,3 +82,6 @@ artifacts/
 # Logs
 *.log
 logs/
+
+# Anvil
+anvil.lock

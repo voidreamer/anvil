@@ -1,0 +1,30 @@
+name: usd
+version: "24.08"
+description: Pixar Universal Scene Description 24.08
+
+requires:
+  - python-3.11
+
+environment:
+  USD_VERSION: "${VERSION}"
+  PYTHONPATH: ${USD_ROOT}/lib/python:${PYTHONPATH:-}
+  PATH: ${USD_ROOT}/bin:${PATH}
+
+commands:
+  usdview: ${USD_ROOT}/bin/usdview
+  usdcat: ${USD_ROOT}/bin/usdcat
+  usdchecker: ${USD_ROOT}/bin/usdchecker
+
+variants:
+  - platform: linux
+    environment:
+      USD_ROOT: /opt/usd/${VERSION}
+      LD_LIBRARY_PATH: ${USD_ROOT}/lib:${LD_LIBRARY_PATH:-}
+  - platform: macos
+    environment:
+      USD_ROOT: /opt/usd/${VERSION}
+      DYLD_LIBRARY_PATH: ${USD_ROOT}/lib:${DYLD_LIBRARY_PATH:-}
+  - platform: windows
+    environment:
+      USD_ROOT: C:/USD/${VERSION}
+      PATH: ${USD_ROOT}/lib;${PATH}
