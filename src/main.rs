@@ -141,15 +141,20 @@ fn cmd_run(
     // Resolve command alias. A command value may include baked-in
     // arguments (e.g. `nukex: ${NUKE}/Nuke --nukex`) or whitespace from
     // a script launcher (e.g. `usdview: python3.14 ~/USD/bin/usdview`).
-    // Tokenize the resolved value with POSIX shell rules so the first
-    // token is the program and the rest are prepended to user args.
+    // Tokenize with POSIX shell rules so the first token is the program
+    // and the rest are prepended to user args. Tilde-expand each token
+    // individually — Package::expand_env_value only expands a leading
+    // `~/` so tokens after whitespace would otherwise stay literal.
     let commands_map = resolved.commands();
     let resolved_cmd = commands_map
         .get(&command[0])
         .cloned()
         .unwrap_or_else(|| command[0].clone());
-    let mut tokens = shell_words::split(&resolved_cmd)
-        .with_context(|| format!("Failed to parse command alias: {:?}", resolved_cmd))?;
+    let mut tokens: Vec<String> = shell_words::split(&resolved_cmd)
+        .with_context(|| format!("Failed to parse command alias: {:?}", resolved_cmd))?
+        .into_iter()
+        .map(|t| shellexpand::tilde(&t).into_owned())
+        .collect();
     if tokens.is_empty() {
         anyhow::bail!(
             "Command alias for {:?} resolved to an empty string",
