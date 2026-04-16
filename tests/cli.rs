@@ -221,6 +221,59 @@ fn run_without_command_fails() {
         .failure();
 }
 
+#[test]
+fn run_multi_token_command_alias() {
+    // A command alias whose value has whitespace (program + baked-in
+    // args) must be split so the user's extra args land after the
+    // baked-in ones. Regression for issue where the whole string was
+    // passed to Command::new() as a single filename.
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    fs::write(
+        pkg_dir.join("greeter-1.0.yaml"),
+        "name: greeter\nversion: \"1.0\"\ncommands:\n  greet: /bin/echo hello from\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+
+    anvil(&config_path.to_string_lossy())
+        .args(["run", "greeter-1.0", "--", "greet", "world"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from world"));
+}
+
+#[test]
+fn run_quoted_tokens_in_alias() {
+    // Quoted substrings in an alias must stay as a single argv element.
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    fs::write(
+        pkg_dir.join("qtest-1.0.yaml"),
+        "name: qtest\nversion: \"1.0\"\ncommands:\n  say: /bin/echo \"hello world\"\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+
+    anvil(&config_path.to_string_lossy())
+        .args(["run", "qtest-1.0", "--", "say"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello world"));
+}
+
 // ---- flat file + nested coexistence ----
 
 #[test]

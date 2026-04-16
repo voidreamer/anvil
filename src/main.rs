@@ -2,7 +2,7 @@
 //!
 //! A fast, lightweight alternative to Rez for managing DCC environments.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -138,18 +138,33 @@ fn cmd_run(
         anyhow::bail!("No command specified");
     }
 
-    // Resolve command alias
+    // Resolve command alias. A command value may include baked-in
+    // arguments (e.g. `nukex: ${NUKE}/Nuke --nukex`) or whitespace from
+    // a script launcher (e.g. `usdview: python3.14 ~/USD/bin/usdview`).
+    // Tokenize the resolved value with POSIX shell rules so the first
+    // token is the program and the rest are prepended to user args.
     let commands_map = resolved.commands();
-    let executable = commands_map
+    let resolved_cmd = commands_map
         .get(&command[0])
         .cloned()
         .unwrap_or_else(|| command[0].clone());
+    let mut tokens = shell_words::split(&resolved_cmd)
+        .with_context(|| format!("Failed to parse command alias: {:?}", resolved_cmd))?;
+    if tokens.is_empty() {
+        anyhow::bail!(
+            "Command alias for {:?} resolved to an empty string",
+            command[0]
+        );
+    }
+    let executable = tokens.remove(0);
+    let mut all_args = tokens;
+    all_args.extend(command[1..].iter().cloned());
 
     // Pre-run hooks
     Config::run_hooks(&config.hooks.pre_run, &env)?;
 
     let status = Command::new(&executable)
-        .args(&command[1..])
+        .args(&all_args)
         .envs(&env)
         .status()?;
 
