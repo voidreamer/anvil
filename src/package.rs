@@ -168,6 +168,25 @@ impl Package {
     }
 }
 
+/// Tokenize a command-alias value into `[program, args...]`.
+///
+/// If the whole value — after tilde expansion — names an existing file, it's
+/// treated as a single executable path (so paths with spaces like
+/// `/Applications/Houdini 20/bin/hython` work without quoting).  Otherwise the
+/// value is split with POSIX shell rules and each token is tilde-expanded.
+pub fn tokenize_command(raw: &str) -> Result<Vec<String>> {
+    let whole = shellexpand::tilde(raw).into_owned();
+    if std::path::Path::new(&whole).is_file() {
+        return Ok(vec![whole]);
+    }
+
+    let tokens: Vec<String> = shell_words::split(raw)?
+        .into_iter()
+        .map(|t| shellexpand::tilde(&t).into_owned())
+        .collect();
+    Ok(tokens)
+}
+
 /// Parse a package request string (e.g., "maya-2024", "arnold-7.2+")
 #[derive(Debug, Clone)]
 pub struct PackageRequest {

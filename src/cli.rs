@@ -8,6 +8,10 @@ use clap::{CommandFactory, Parser, Subcommand};
 #[command(version)]
 #[command(about = "Forge your environment 🔨 — Fast package resolution for VFX pipelines", long_about = None)]
 pub struct Cli {
+    /// Ignore any cached package scan and re-read all package files.
+    #[arg(long, global = true)]
+    pub refresh: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -71,6 +75,11 @@ pub enum Commands {
     Validate {
         /// Package to validate (optional, validates all if not specified)
         package: Option<String>,
+
+        /// Treat command-target warnings (missing / non-executable files)
+        /// as validation failures.
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Pin resolved versions to a lockfile for reproducible environments

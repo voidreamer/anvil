@@ -33,32 +33,33 @@ fn main() -> Result<()> {
 
     // Load config
     let config = Config::load()?;
+    let refresh = cli.refresh;
 
     match cli.command {
         Commands::Env { packages, export, json } => {
-            cmd_env(&config, &packages, export, json)?;
+            cmd_env(&config, &packages, export, json, refresh)?;
         }
         Commands::Run { packages, env_vars, command } => {
-            cmd_run(&config, &packages, &env_vars, &command)?;
+            cmd_run(&config, &packages, &env_vars, &command, refresh)?;
         }
         Commands::Shell { packages, shell } => {
-            cmd_shell(&config, &packages, shell)?;
+            cmd_shell(&config, &packages, shell, refresh)?;
         }
         Commands::List { package } => {
-            cmd_list(&config, package)?;
+            cmd_list(&config, package, refresh)?;
         }
         Commands::Info { package } => {
-            cmd_info(&config, &package)?;
+            cmd_info(&config, &package, refresh)?;
         }
-        Commands::Validate { package } => {
-            cmd_validate(&config, package)?;
+        Commands::Validate { package, strict } => {
+            cmd_validate(&config, package, strict, refresh)?;
         }
         Commands::Lock { packages, update: _ } => {
-            cmd_lock(&config, &packages)?;
+            cmd_lock(&config, &packages, refresh)?;
         }
         Commands::Context { action } => match action {
             ContextAction::Save { packages, output } => {
-                cmd_context_save(&config, &packages, &output)?;
+                cmd_context_save(&config, &packages, &output, refresh)?;
             }
             ContextAction::Show { file, json, export } => {
                 cmd_context_show(&file, json, export)?;
@@ -77,7 +78,7 @@ fn main() -> Result<()> {
             Cli::print_completions(shell);
         }
         Commands::Wrap { packages, dir, shell } => {
-            cmd_wrap(&config, &packages, &dir, &shell)?;
+            cmd_wrap(&config, &packages, &dir, &shell, refresh)?;
         }
         Commands::Publish { target, path, flat } => {
             cmd_publish(&target, path.as_deref(), flat)?;
@@ -88,8 +89,14 @@ fn main() -> Result<()> {
 }
 
 /// Resolve packages and print environment
-fn cmd_env(config: &Config, packages: &[String], export: bool, json: bool) -> Result<()> {
-    let resolver = Resolver::new(config)?;
+fn cmd_env(
+    config: &Config,
+    packages: &[String],
+    export: bool,
+    json: bool,
+    refresh: bool,
+) -> Result<()> {
+    let resolver = Resolver::new(config, refresh)?;
     let resolved = resolver.resolve(packages)?;
     let env = resolved.environment();
 
@@ -114,13 +121,14 @@ fn cmd_run(
     packages: &[String],
     env_vars: &[String],
     command: &[String],
+    refresh: bool,
 ) -> Result<()> {
     use std::process::Command;
 
     // Pre-resolve hooks
     Config::run_hooks(&config.hooks.pre_resolve, &std::env::vars().collect())?;
 
-    let resolver = Resolver::new(config)?;
+    let resolver = Resolver::new(config, refresh)?;
     let resolved = resolver.resolve(packages)?;
     let mut env = resolved.environment();
 
@@ -138,23 +146,17 @@ fn cmd_run(
         anyhow::bail!("No command specified");
     }
 
-    // Resolve command alias. A command value may include baked-in
-    // arguments (e.g. `nukex: ${NUKE}/Nuke --nukex`) or whitespace from
-    // a script launcher (e.g. `usdview: python3.14 ~/USD/bin/usdview`).
-    // Tokenize with POSIX shell rules so the first token is the program
-    // and the rest are prepended to user args. Tilde-expand each token
-    // individually — Package::expand_env_value only expands a leading
-    // `~/` so tokens after whitespace would otherwise stay literal.
+    // Resolve command alias.  A command value may be a bare path (possibly
+    // containing spaces, e.g. `/Applications/Houdini 20/bin/hython`), or
+    // include baked-in arguments (e.g. `nukex: ${NUKE}/Nuke --nukex`), or
+    // whitespace from a script launcher (e.g. `python3.14 ~/USD/bin/usdview`).
     let commands_map = resolved.commands();
     let resolved_cmd = commands_map
         .get(&command[0])
         .cloned()
         .unwrap_or_else(|| command[0].clone());
-    let mut tokens: Vec<String> = shell_words::split(&resolved_cmd)
-        .with_context(|| format!("Failed to parse command alias: {:?}", resolved_cmd))?
-        .into_iter()
-        .map(|t| shellexpand::tilde(&t).into_owned())
-        .collect();
+    let mut tokens = package::tokenize_command(&resolved_cmd)
+        .with_context(|| format!("Failed to parse command alias: {:?}", resolved_cmd))?;
     if tokens.is_empty() {
         anyhow::bail!(
             "Command alias for {:?} resolved to an empty string",
@@ -180,8 +182,13 @@ fn cmd_run(
 }
 
 /// Start interactive shell with resolved environment
-fn cmd_shell(config: &Config, packages: &[String], shell: Option<String>) -> Result<()> {
-    let resolver = Resolver::new(config)?;
+fn cmd_shell(
+    config: &Config,
+    packages: &[String],
+    shell: Option<String>,
+    refresh: bool,
+) -> Result<()> {
+    let resolver = Resolver::new(config, refresh)?;
     let resolved = resolver.resolve(packages)?;
     let env = resolved.environment();
 
@@ -195,8 +202,8 @@ fn cmd_shell(config: &Config, packages: &[String], shell: Option<String>) -> Res
 }
 
 /// List available packages
-fn cmd_list(config: &Config, package: Option<String>) -> Result<()> {
-    let resolver = Resolver::new(config)?;
+fn cmd_list(config: &Config, package: Option<String>, refresh: bool) -> Result<()> {
+    let resolver = Resolver::new(config, refresh)?;
 
     if let Some(name) = package {
         // List versions of specific package
@@ -217,8 +224,8 @@ fn cmd_list(config: &Config, package: Option<String>) -> Result<()> {
 }
 
 /// Show package info
-fn cmd_info(config: &Config, package: &str) -> Result<()> {
-    let resolver = Resolver::new(config)?;
+fn cmd_info(config: &Config, package: &str, refresh: bool) -> Result<()> {
+    let resolver = Resolver::new(config, refresh)?;
     let pkg = resolver.get_package(package)?;
 
     println!("Name: {}", pkg.name);
@@ -248,9 +255,18 @@ fn cmd_info(config: &Config, package: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate package definitions
-fn cmd_validate(config: &Config, package: Option<String>) -> Result<()> {
-    let resolver = Resolver::new(config)?;
+/// Validate package definitions.
+///
+/// Dependency problems are always fatal.  Command-target problems
+/// (missing / non-executable files) are reported as warnings unless
+/// `strict` is set, in which case they fail validation too.
+fn cmd_validate(
+    config: &Config,
+    package: Option<String>,
+    strict: bool,
+    refresh: bool,
+) -> Result<()> {
+    let resolver = Resolver::new(config, refresh)?;
 
     let packages = if let Some(name) = package {
         vec![name]
@@ -259,10 +275,27 @@ fn cmd_validate(config: &Config, package: Option<String>) -> Result<()> {
     };
 
     let mut errors = 0;
+    let mut warnings = 0;
 
     for pkg_name in packages {
-        match resolver.validate_package(&pkg_name) {
-            Ok(()) => println!("✓ {}", pkg_name),
+        let report = resolver.validate_package_report(&pkg_name);
+        match report {
+            Ok(cmd_problems) => {
+                if cmd_problems.is_empty() {
+                    println!("✓ {}", pkg_name);
+                } else {
+                    let label = if strict { "✗" } else { "!" };
+                    println!("{} {}: command problems:", label, pkg_name);
+                    for p in &cmd_problems {
+                        println!("    - {}", p);
+                    }
+                    if strict {
+                        errors += 1;
+                    } else {
+                        warnings += 1;
+                    }
+                }
+            }
             Err(e) => {
                 println!("✗ {}: {}", pkg_name, e);
                 errors += 1;
@@ -274,7 +307,14 @@ fn cmd_validate(config: &Config, package: Option<String>) -> Result<()> {
         anyhow::bail!("{} package(s) failed validation", errors);
     }
 
-    println!("\nAll packages valid!");
+    if warnings > 0 {
+        println!(
+            "\nAll dependencies resolve ({} package(s) with command warnings — use --strict to fail on these).",
+            warnings
+        );
+    } else {
+        println!("\nAll packages valid!");
+    }
     Ok(())
 }
 
@@ -283,9 +323,9 @@ fn cmd_validate(config: &Config, package: Option<String>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Resolve packages and write pinned versions to `anvil.lock`.
-fn cmd_lock(config: &Config, packages: &[String]) -> Result<()> {
+fn cmd_lock(config: &Config, packages: &[String], refresh: bool) -> Result<()> {
     // Always resolve fresh (ignore existing lockfile).
-    let resolver = Resolver::new_unlocked(config)?;
+    let resolver = Resolver::new_unlocked(config, refresh)?;
     let resolved = resolver.resolve(packages)?;
 
     let mut pins = std::collections::HashMap::new();
@@ -314,8 +354,13 @@ fn cmd_lock(config: &Config, packages: &[String]) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Resolve packages and save the full environment to a context file.
-fn cmd_context_save(config: &Config, packages: &[String], output: &str) -> Result<()> {
-    let resolver = Resolver::new(config)?;
+fn cmd_context_save(
+    config: &Config,
+    packages: &[String],
+    output: &str,
+    refresh: bool,
+) -> Result<()> {
+    let resolver = Resolver::new(config, refresh)?;
     let resolved = resolver.resolve(packages)?;
     let env = resolved.environment();
 
@@ -416,7 +461,7 @@ fn cmd_init(name: &str, version: &str, flat: bool) -> Result<()> {
     let template = format!(
         r#"name: {name}
 version: "{version}"
-description: TODO
+# description: one-line summary
 
 # requires:
 #   - python-3.11
@@ -459,8 +504,14 @@ environment:
 // ---------------------------------------------------------------------------
 
 /// Generate wrapper scripts for all commands defined by the resolved packages.
-fn cmd_wrap(config: &Config, packages: &[String], dir: &str, wrapper_shell: &str) -> Result<()> {
-    let resolver = Resolver::new(config)?;
+fn cmd_wrap(
+    config: &Config,
+    packages: &[String],
+    dir: &str,
+    wrapper_shell: &str,
+    refresh: bool,
+) -> Result<()> {
+    let resolver = Resolver::new(config, refresh)?;
     let resolved = resolver.resolve(packages)?;
     let commands = resolved.commands();
 

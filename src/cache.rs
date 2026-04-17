@@ -68,23 +68,35 @@ pub fn compute_fingerprint(package_paths: &[PathBuf], config_salt: &str) -> u64 
 }
 
 fn hash_dir_entries(dir: &Path, hasher: &mut impl Hasher) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        let mut items: Vec<(String, u64)> = entries
-            .flatten()
-            .map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                let mtime = e
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                (name, mtime)
-            })
-            .collect();
-        items.sort();
-        items.hash(hasher);
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            // Tuple: (name, mtime_nanos, size).  Including size catches
+            // edits where mtime didn't advance at second-resolution, and
+            // the count of entries is implicit in the vec length.
+            let mut items: Vec<(String, u128, u64)> = entries
+                .flatten()
+                .map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let meta = e.metadata().ok();
+                    let mtime = meta
+                        .as_ref()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0);
+                    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                    (name, mtime, size)
+                })
+                .collect();
+            items.sort();
+            items.len().hash(hasher);
+            items.hash(hasher);
+        }
+        Err(_) => {
+            // Signal "unreadable" so the hash still changes if a dir flips
+            // between readable and not.
+            "ERR".hash(hasher);
+        }
     }
 }
 
@@ -95,9 +107,10 @@ fn hash_file_mtime(path: &Path, hasher: &mut impl Hasher) {
             mtime
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_secs()
+                .as_nanos()
                 .hash(hasher);
         }
+        meta.len().hash(hasher);
     }
 }
 

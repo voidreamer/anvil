@@ -92,10 +92,9 @@ impl FiltersConfig {
 
 /// Simple glob matching supporting `*` (any chars) and `?` (single char).
 fn glob_match(pattern: &str, text: &str) -> bool {
-    let mut p = pattern.chars().peekable();
-    let mut t = text.chars().peekable();
-
-    glob_match_inner(&mut p.collect::<Vec<_>>(), &t.collect::<Vec<_>>(), 0, 0)
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    glob_match_inner(&p, &t, 0, 0)
 }
 
 fn glob_match_inner(pattern: &[char], text: &[char], pi: usize, ti: usize) -> bool {

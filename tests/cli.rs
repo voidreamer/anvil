@@ -170,12 +170,15 @@ fn env_export() {
 
 #[test]
 fn validate_all() {
+    // Test fixtures use fictional command target paths
+    // (e.g. /usr/autodesk/maya2024/bin/maya), so validate reports
+    // command warnings but still succeeds.  Dependencies do resolve.
     let (_dir, cfg) = setup_env();
     anvil(&cfg)
         .args(["validate"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("All packages valid!"));
+        .stdout(predicate::str::contains("All dependencies resolve").or(predicate::str::contains("All packages valid!")));
 }
 
 #[test]
@@ -532,6 +535,108 @@ fn init_refuses_overwrite() {
         .args(["init", "my-tool"])
         .assert()
         .failure();
+}
+
+// ---- alias with spaces in path ----
+
+#[test]
+fn run_whole_path_with_spaces() {
+    // When the alias value is a bare path to an existing file containing
+    // spaces, it should be executed directly without being split on
+    // whitespace. Regression for `/Applications/Houdini 20/bin/hython`.
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    // Create a real target file whose path contains a space.
+    let spaced_dir = dir.path().join("With Space");
+    fs::create_dir_all(&spaced_dir).unwrap();
+    let script = spaced_dir.join("say.sh");
+    fs::write(&script, "#!/bin/bash\necho whole-path-ok\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+    }
+
+    fs::write(
+        pkg_dir.join("spacey-1.0.yaml"),
+        format!(
+            "name: spacey\nversion: \"1.0\"\ncommands:\n  say: {}\n",
+            script.display()
+        ),
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+
+    anvil(&config_path.to_string_lossy())
+        .args(["run", "spacey-1.0", "--", "say"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("whole-path-ok"));
+}
+
+// ---- validate detects missing command targets ----
+
+fn setup_broken_cmd_pkg() -> (TempDir, String) {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    fs::write(
+        pkg_dir.join("broken-1.0.yaml"),
+        "name: broken\nversion: \"1.0\"\ncommands:\n  ghost: /does/not/exist/xyz\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    let cfg = config_path.to_string_lossy().to_string();
+    (dir, cfg)
+}
+
+#[test]
+fn validate_warns_missing_command_target() {
+    let (_dir, cfg) = setup_broken_cmd_pkg();
+    // Default: warnings reported but validation still succeeds.
+    anvil(&cfg)
+        .args(["validate", "broken-1.0"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ghost"))
+        .stdout(predicate::str::contains("file does not exist"));
+}
+
+#[test]
+fn validate_strict_fails_on_missing_command_target() {
+    let (_dir, cfg) = setup_broken_cmd_pkg();
+    anvil(&cfg)
+        .args(["validate", "broken-1.0", "--strict"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("ghost"));
+}
+
+// ---- --refresh flag ----
+
+#[test]
+fn refresh_flag_runs() {
+    // Smoke-test: --refresh works as a global flag and produces normal output.
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["--refresh", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("maya"));
 }
 
 // ---- anvil completions ----

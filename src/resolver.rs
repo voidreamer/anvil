@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 use crate::cache;
 use crate::config::Config;
 use crate::context::Lockfile;
-use crate::package::{Package, PackageRequest};
+use crate::package::{tokenize_command, Package, PackageRequest};
 
 /// Resolved set of packages
 #[derive(Debug)]
@@ -82,7 +82,8 @@ pub struct Resolver {
 
 impl Resolver {
     /// Create a new resolver, automatically loading `anvil.lock` if present.
-    pub fn new(config: &Config) -> Result<Self> {
+    /// When `refresh` is true, the package scan cache is bypassed.
+    pub fn new(config: &Config, refresh: bool) -> Result<Self> {
         let pins = if let Some(lock_path) = Lockfile::find() {
             let lockfile = Lockfile::load(&lock_path)?;
             info!("Using lockfile: {:?}", lock_path);
@@ -96,34 +97,38 @@ impl Resolver {
             package_cache: HashMap::new(),
             pins,
         };
-        resolver.load_packages()?;
+        resolver.load_packages(refresh)?;
         Ok(resolver)
     }
 
     /// Create a resolver that ignores any existing lockfile.
-    pub fn new_unlocked(config: &Config) -> Result<Self> {
+    pub fn new_unlocked(config: &Config, refresh: bool) -> Result<Self> {
         let mut resolver = Resolver {
             config: config.clone(),
             package_cache: HashMap::new(),
             pins: HashMap::new(),
         };
-        resolver.load_packages()?;
+        resolver.load_packages(refresh)?;
         Ok(resolver)
     }
 
-    /// Load packages: try the cache first, fall back to a full scan.
-    fn load_packages(&mut self) -> Result<()> {
+    /// Load packages: try the cache first (unless `refresh`), fall back to a full scan.
+    fn load_packages(&mut self, refresh: bool) -> Result<()> {
         let paths = self.config.all_package_paths();
         // Include config state in the cache key so different configs
         // don't share a cache (e.g. different filters or package paths).
         let salt = format!("{:?}{:?}", self.config.package_paths, self.config.filters);
 
         // Try cache
-        if let Some(cached) = cache::load(&paths, &salt) {
-            self.package_cache = cached;
-            self.apply_filters();
-            info!("Loaded {} packages (cached)", self.package_cache.len());
-            return Ok(());
+        if !refresh {
+            if let Some(cached) = cache::load(&paths, &salt) {
+                self.package_cache = cached;
+                self.apply_filters();
+                info!("Loaded {} packages (cached)", self.package_cache.len());
+                return Ok(());
+            }
+        } else {
+            info!("Bypassing package scan cache (--refresh)");
         }
 
         // Full scan
@@ -333,8 +338,10 @@ impl Resolver {
         self.find_package(&request)
     }
 
-    /// Validate a package definition
-    pub fn validate_package(&self, id: &str) -> Result<()> {
+    /// Validate a package definition.  Returns `Err` for fatal problems
+    /// (missing deps, parse errors) and `Ok(problems)` listing any
+    /// non-fatal command-target issues (caller decides how to surface them).
+    pub fn validate_package_report(&self, id: &str) -> Result<Vec<String>> {
         let request = PackageRequest::parse(id)?;
         let package = self.find_package(&request)?;
 
@@ -344,6 +351,79 @@ impl Resolver {
                 .with_context(|| format!("Missing dependency: {}", dep_str))?;
         }
 
+        // Check command targets.  Expand ${PACKAGE_ROOT}, ${NAME}, etc.
+        // against the package's own env, then tokenize and check the program.
+        let base_env: HashMap<String, String> = std::env::vars().collect();
+        let pkg_env = package.resolved_environment(&base_env);
+        let mut problems: Vec<String> = Vec::new();
+        for (alias, target) in &package.commands {
+            let expanded = package.expand_env_value(target, &pkg_env);
+            let tokens = match tokenize_command(&expanded) {
+                Ok(t) => t,
+                Err(e) => {
+                    problems.push(format!("{}: failed to parse ({})", alias, e));
+                    continue;
+                }
+            };
+            let Some(program) = tokens.first() else {
+                problems.push(format!("{}: alias resolved to empty string", alias));
+                continue;
+            };
+            if let Err(msg) = check_executable(program) {
+                problems.push(format!("{} -> {:?}: {}", alias, program, msg));
+            }
+        }
+
+        Ok(problems)
+    }
+
+    /// Back-compat shim: treat any command-target problems as errors.
+    #[cfg(test)]
+    pub fn validate_package(&self, id: &str) -> Result<()> {
+        let problems = self.validate_package_report(id)?;
+        if !problems.is_empty() {
+            anyhow::bail!("Command problems:\n  - {}", problems.join("\n  - "));
+        }
         Ok(())
     }
+}
+
+/// Check that `program` is an existing file that is executable.  Looks up
+/// bare names (no slash) on `PATH` via the `which` crate.
+fn check_executable(program: &str) -> std::result::Result<(), String> {
+    let path = std::path::Path::new(program);
+    let resolved: std::path::PathBuf = if path.components().count() > 1 || path.is_absolute() {
+        if !path.exists() {
+            return Err("file does not exist".into());
+        }
+        path.to_path_buf()
+    } else {
+        match which::which(program) {
+            Ok(p) => p,
+            Err(_) => return Err("not found on PATH".into()),
+        }
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&resolved)
+            .map_err(|e| format!("stat failed: {}", e))?;
+        if !meta.is_file() {
+            return Err("not a regular file".into());
+        }
+        if meta.permissions().mode() & 0o111 == 0 {
+            return Err("not executable (no +x bit)".into());
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let meta = std::fs::metadata(&resolved)
+            .map_err(|e| format!("stat failed: {}", e))?;
+        if !meta.is_file() {
+            return Err("not a regular file".into());
+        }
+    }
+
+    Ok(())
 }
