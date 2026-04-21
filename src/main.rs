@@ -42,8 +42,8 @@ fn main() -> Result<()> {
         Commands::Run { packages, env_vars, command } => {
             cmd_run(&config, &packages, &env_vars, &command, refresh)?;
         }
-        Commands::Shell { packages, shell } => {
-            cmd_shell(&config, &packages, shell, refresh)?;
+        Commands::Shell { packages, shell, env_only, no_sweep } => {
+            cmd_shell(&config, &packages, shell, refresh, env_only, no_sweep)?;
         }
         Commands::List { package } => {
             cmd_list(&config, package, refresh)?;
@@ -187,14 +187,39 @@ fn cmd_shell(
     packages: &[String],
     shell: Option<String>,
     refresh: bool,
+    env_only: bool,
+    no_sweep: bool,
 ) -> Result<()> {
     let resolver = Resolver::new(config, refresh)?;
     let resolved = resolver.resolve(packages)?;
-    let env = resolved.environment();
+    let mut env = resolved.environment();
 
     let shell_path = shell
         .or_else(|| config.default_shell.clone())
         .unwrap_or_else(|| shell::detect_shell());
+
+    // Opt-outs, in priority order:
+    //   1. --env-only flag
+    //   2. ANVIL_DISABLE_COMMAND_SHIMS env var (useful in CI)
+    //   3. `shell.inject_commands: false` in config
+    let disabled_by_env = std::env::var_os("ANVIL_DISABLE_COMMAND_SHIMS").is_some();
+    let inject = !env_only && !disabled_by_env && config.shell.inject_commands;
+
+    if inject {
+        if !no_sweep {
+            shell::sweep_stale_shims(std::time::Duration::from_secs(config.shell.orphan_ttl));
+        }
+
+        let commands = resolved.commands();
+        if !commands.is_empty() {
+            let shim_dir = shell::materialize_commands(&commands)?;
+            shell::prepend_path(&mut env, &shim_dir);
+            env.insert(
+                "ANVIL_COMMAND_DIR".to_string(),
+                shim_dir.to_string_lossy().into_owned(),
+            );
+        }
+    }
 
     shell::spawn_shell(&shell_path, &env)?;
 

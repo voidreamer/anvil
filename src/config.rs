@@ -31,6 +31,41 @@ pub struct Config {
     /// Package include/exclude filters
     #[serde(default)]
     pub filters: FiltersConfig,
+
+    /// `anvil shell` behaviour
+    #[serde(default)]
+    pub shell: ShellConfig,
+}
+
+/// Controls how `anvil shell` composes the interactive subshell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellConfig {
+    /// Materialize `commands:` declarations as PATH shims inside the subshell.
+    #[serde(default = "default_true")]
+    pub inject_commands: bool,
+
+    /// Orphaned shim tempdirs older than this (seconds) are swept on
+    /// `anvil shell` entry.  Orphans happen when a shell is SIGKILL'd before
+    /// its tempdir handle is cleaned up.
+    #[serde(default = "default_orphan_ttl")]
+    pub orphan_ttl: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_orphan_ttl() -> u64 {
+    3600
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        ShellConfig {
+            inject_commands: true,
+            orphan_ttl: 3600,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -321,6 +356,12 @@ impl Config {
         // Filters: project filters replace global (not merged)
         if !project.filters.include.is_empty() || !project.filters.exclude.is_empty() {
             self.filters = project.filters;
+        }
+
+        // Shell: project shell config replaces global only if it differs from
+        // the default (serde fills in the default when the project omits `shell:`).
+        if project.shell != ShellConfig::default() {
+            self.shell = project.shell;
         }
 
         // Merge per-platform paths (project first)

@@ -878,3 +878,16 @@ fn publish_refuses_overwrite() {
         .assert()
         .failure();
 }
+
+// ---- anvil shell flags ----
+
+#[test]
+fn shell_help_exposes_shim_flags() {
+    let (_dir, cfg) = setup_env();
+    anvil(&cfg)
+        .args(["shell", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--env-only"))
+        .stdout(predicate::str::contains("--no-sweep"));
+}
