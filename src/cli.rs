@@ -57,6 +57,14 @@ pub enum Commands {
         /// Shell to use (defaults to $SHELL or bash)
         #[arg(short, long)]
         shell: Option<String>,
+
+        /// Don't materialise `commands:` as PATH shims — compose the env only.
+        #[arg(long)]
+        env_only: bool,
+
+        /// Skip the orphan-shim sweep on entry (debugging aid).
+        #[arg(long)]
+        no_sweep: bool,
     },
 
     /// List available packages
