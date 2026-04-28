@@ -20,16 +20,27 @@ use context::{ContextPackage, Lockfile, SavedContext};
 use resolver::Resolver;
 
 fn main() -> Result<()> {
-    // Initialize logging
+    let cli = Cli::parse();
+
+    // Default to WARN so casual `anvil env <pkg>` invocations don't litter
+    // stderr with "Loaded N packages" and similar. `-v` / `-vv` step up
+    // to info / debug; `RUST_LOG` still wins when set.
+    let default_filter = match cli.verbose {
+        0 => "anvil=warn",
+        1 => "anvil=info",
+        _ => "anvil=debug",
+    };
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "anvil=info".into()),
+                .unwrap_or_else(|_| default_filter.into()),
         )
-        .with(tracing_subscriber::fmt::layer().with_target(false))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_writer(std::io::stderr),
+        )
         .init();
-
-    let cli = Cli::parse();
 
     // Load config
     let config = Config::load()?;
@@ -71,8 +82,17 @@ fn main() -> Result<()> {
                 cmd_context_shell(&config, &file, shell)?;
             }
         },
-        Commands::Init { name, version, flat } => {
-            cmd_init(&name, &version, flat)?;
+        Commands::Init { name, version, flat, config: scaffold_config } => {
+            if scaffold_config {
+                cmd_init_config()?;
+            } else {
+                let name = name.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "anvil init: provide a package name, or pass --config to scaffold ~/.anvil.yaml"
+                    )
+                })?;
+                cmd_init(&name, &version, flat)?;
+            }
         }
         Commands::Completions { shell } => {
             Cli::print_completions(shell);
@@ -240,6 +260,21 @@ fn cmd_list(config: &Config, package: Option<String>, refresh: bool) -> Result<(
     } else {
         // List all packages
         let packages = resolver.list_packages()?;
+        if packages.is_empty() {
+            if let Some(hint) = config.first_run_hint() {
+                eprintln!("No packages found.\n  {}", hint.replace('\n', "\n  "));
+            } else {
+                eprintln!(
+                    "No packages found in any of the configured paths:\n{}",
+                    config
+                        .all_package_paths()
+                        .iter()
+                        .map(|p| format!("  - {}", p.display()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+            }
+        }
         for pkg in packages {
             println!("{}", pkg);
         }
@@ -255,6 +290,15 @@ fn cmd_info(config: &Config, package: &str, refresh: bool) -> Result<()> {
 
     println!("Name: {}", pkg.name);
     println!("Version: {}", pkg.version);
+    // When the user asked for a bare name (e.g. `anvil info resolver`) and
+    // there are several versions on disk, surface them so the asymmetry
+    // between filename (`resolver-1.yaml`) and package name (`resolver`)
+    // doesn't hide the others.
+    if let Ok(versions) = resolver.list_versions(&pkg.name) {
+        if versions.len() > 1 {
+            println!("Available versions: {}", versions.join(", "));
+        }
+    }
     if let Some(desc) = &pkg.description {
         println!("Description: {}", desc);
     }
@@ -520,6 +564,52 @@ environment:
         std::fs::write(&pkg_path, &template)?;
         println!("Created {}", pkg_path);
     }
+
+    Ok(())
+}
+
+/// Scaffold a global `~/.anvil.yaml` so first-time users have something to
+/// edit instead of an empty file.
+fn cmd_init_config() -> Result<()> {
+    let path = Config::config_path();
+    if path.exists() {
+        anyhow::bail!("{} already exists", path.display());
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+
+    let template = r#"# Anvil global config — see https://github.com/voidreamer/anvil
+
+# Where to look for package definitions, in priority order.
+# Each entry can be a directory of flat `<name>-<version>.yaml` files
+# and/or nested `<name>/<version>/package.yaml` packages.
+package_paths:
+  - ~/packages
+  # - /studio/packages
+  # - ${STUDIO_ROOT}/packages
+
+# Optional: package set aliases (use as `anvil run <alias-name> -- ...`).
+# aliases:
+#   maya-anim:
+#     - maya-2024
+#     - studio-tools
+
+# Optional: shell that `anvil shell` uses by default.
+# default_shell: zsh
+
+# Optional: hide / restrict packages by glob.
+# filters:
+#   include: ["maya-*", "houdini-*"]
+#   exclude: ["*-dev"]
+"#;
+
+    std::fs::write(&path, template)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    println!("Created {}", path.display());
+    println!("Edit it to point `package_paths` at your package directory, then run `anvil list`.");
 
     Ok(())
 }

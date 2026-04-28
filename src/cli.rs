@@ -12,6 +12,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub refresh: bool,
 
+    /// Increase log verbosity: `-v` enables info, `-vv` enables debug.
+    /// `RUST_LOG` overrides this when set.
+    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
+    pub verbose: u8,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -107,18 +112,22 @@ pub enum Commands {
         action: ContextAction,
     },
 
-    /// Scaffold a new package definition
+    /// Scaffold a new package definition (or `--config` for the global config)
     Init {
-        /// Package name (e.g., my-tools)
-        name: String,
+        /// Package name (e.g., my-tools). Omit when using `--config`.
+        name: Option<String>,
 
         /// Package version (default: 1.0.0)
-        #[arg(short, long, default_value = "1.0.0")]
+        #[arg(long, default_value = "1.0.0")]
         version: String,
 
         /// Create as a flat YAML file instead of a nested directory
-        #[arg(long)]
+        #[arg(long, conflicts_with = "config")]
         flat: bool,
+
+        /// Scaffold a global `~/.anvil.yaml` instead of a package
+        #[arg(long, conflicts_with_all = ["flat", "name"])]
+        config: bool,
     },
 
     /// Generate shell completions
