@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod cache;
@@ -189,6 +190,10 @@ fn cmd_run(
 
     // Pre-run hooks
     Config::run_hooks(&config.hooks.pre_run, &env)?;
+
+    // Surface the resolved argv at `-v`/`-vv` so when an exec fails with
+    // "file not found" the user can see what anvil actually tried to run.
+    info!("exec: {} {:?}", executable, all_args);
 
     let status = Command::new(&executable)
         .args(&all_args)

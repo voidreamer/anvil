@@ -132,11 +132,16 @@ only on the last hyphen when the suffix starts with a digit.
 
 ### Environment expansion
 
-Values resolve in this order: `${PACKAGE_ROOT}`, `${VERSION}`, `${NAME}`, then
-any `${VAR}` set by previously resolved packages or the inherited environment,
-and finally a leading `~/`. When two packages set the same variable without
-referencing `${VAR}` on the right, anvil emits a conflict warning so a silent
-overwrite does not slip through.
+Values resolve in this order: `${PACKAGE_ROOT}`, `${VERSION}`, `${NAME}`,
+`${PATHSEP}` (`:` on Unix / `;` on Windows), `${EXE_SUFFIX}` (`""` on Unix /
+`".exe"` on Windows), then any `${VAR}` set by previously resolved packages or
+the inherited environment, and finally `~/` — which expands at every path
+segment, so `~/USD/bin${PATHSEP}~/USD/lib` works as expected. On Windows
+PowerShell sessions `~/` falls back to `USERPROFILE` when `HOME` is unset.
+
+When two packages set the same variable without referencing `${VAR}` on the
+right, anvil emits a conflict warning so a silent overwrite does not slip
+through.
 
 ### Command aliases
 
