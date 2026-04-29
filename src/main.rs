@@ -120,6 +120,12 @@ fn main() -> Result<()> {
         Commands::Tree { packages } => {
             cmd_tree(&config, &packages, refresh, frozen)?;
         }
+        Commands::Add { packages } => {
+            cmd_add(&config, &packages, refresh)?;
+        }
+        Commands::Remove { names } => {
+            cmd_remove(&config, &names, refresh)?;
+        }
         Commands::Publish { target, path, flat } => {
             cmd_publish(&target, path.as_deref(), flat)?;
         }
@@ -458,6 +464,76 @@ fn cmd_validate(
         println!("\nAll packages valid!");
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Add / Remove
+// ---------------------------------------------------------------------------
+
+/// Read the existing lockfile's request set (or empty if there isn't
+/// one), apply `mutate`, and re-lock.  `mutate` is given the current
+/// request list and returns the new one.  Other lock options
+/// (`--all-platforms`, `--upgrade-package`) intentionally don't apply
+/// here — `anvil add` / `anvil remove` are the simple "edit the
+/// project's package set" path; advanced cases still call `anvil
+/// lock` directly.
+fn re_lock_with<F>(config: &Config, refresh: bool, mutate: F) -> Result<()>
+where
+    F: FnOnce(Vec<String>) -> Vec<String>,
+{
+    let starting = match Lockfile::find() {
+        Some(p) => Lockfile::load(&p)?.requests,
+        None => Vec::new(),
+    };
+    let new_requests = mutate(starting);
+    if new_requests.is_empty() {
+        // Don't write an empty lockfile — that's an unusual state and
+        // probably the user removed too much by mistake.
+        anyhow::bail!(
+            "no packages would remain after this change; refusing to write an empty lockfile"
+        );
+    }
+    cmd_lock(config, &new_requests, refresh, false, &[])
+}
+
+fn cmd_add(config: &Config, additions: &[String], refresh: bool) -> Result<()> {
+    re_lock_with(config, refresh, |existing| {
+        // Replace any existing request whose package name matches one
+        // of the names being added — `anvil add maya-2025` should
+        // bump a previously-pinned `maya-2024`.
+        let new_names: std::collections::HashSet<String> = additions
+            .iter()
+            .filter_map(|s| package::PackageRequest::parse(s).ok().map(|r| r.name))
+            .collect();
+        let mut out: Vec<String> = existing
+            .into_iter()
+            .filter(|s| match package::PackageRequest::parse(s) {
+                Ok(r) => !new_names.contains(&r.name),
+                Err(_) => true,
+            })
+            .collect();
+        for a in additions {
+            out.push(a.clone());
+        }
+        out
+    })
+}
+
+fn cmd_remove(config: &Config, names_to_remove: &[String], refresh: bool) -> Result<()> {
+    if Lockfile::find().is_none() {
+        anyhow::bail!("anvil remove: no anvil.lock to mutate -- run `anvil add` or `anvil lock` first");
+    }
+    let removed_names: std::collections::HashSet<&str> =
+        names_to_remove.iter().map(String::as_str).collect();
+    re_lock_with(config, refresh, |existing| {
+        existing
+            .into_iter()
+            .filter(|s| match package::PackageRequest::parse(s) {
+                Ok(r) => !removed_names.contains(r.name.as_str()),
+                Err(_) => true,
+            })
+            .collect()
+    })
 }
 
 // ---------------------------------------------------------------------------

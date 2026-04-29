@@ -1206,6 +1206,126 @@ fn drift_warning_when_package_changes_after_lock() {
         .stderr(predicate::str::contains("widget-1.0"));
 }
 
+// ---- anvil add / anvil remove ----
+
+#[test]
+fn add_creates_lockfile_when_none_exists() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "maya-2024"])
+        .assert()
+        .success();
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(lock.contains("maya-2024"));
+    assert!(lock.contains("requests:"));
+}
+
+#[test]
+fn add_appends_to_existing_request_set() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "maya-2024"])
+        .assert()
+        .success();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "studio-blender-tools-1.0.0"])
+        .assert()
+        .success();
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(lock.contains("maya-2024"), "{}", lock);
+    assert!(lock.contains("studio-blender-tools-1.0.0"), "{}", lock);
+}
+
+#[test]
+fn add_replaces_request_with_same_name() {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    for v in ["1.0", "2.0"] {
+        fs::write(
+            pkg_dir.join(format!("widget-{}.yaml", v)),
+            format!("name: widget\nversion: \"{}\"\n", v),
+        )
+        .unwrap();
+    }
+    let cfg_path = dir.path().join("config.yaml");
+    fs::write(&cfg_path, format!("package_paths:\n  - {}\n", pkg_dir.display())).unwrap();
+    let cfg = cfg_path.to_string_lossy().to_string();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "widget-1.0"])
+        .assert()
+        .success();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "widget-2.0"])
+        .assert()
+        .success();
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    // Both requests for widget should not coexist; the latest add wins.
+    assert!(lock.contains("widget-2.0"), "{}", lock);
+    assert!(!lock.contains("widget-1.0"), "old version should be replaced:\n{}", lock);
+}
+
+#[test]
+fn remove_drops_requested_name() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "maya-2024"])
+        .assert()
+        .success();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "studio-blender-tools-1.0.0"])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["remove", "studio-blender-tools"])
+        .assert()
+        .success();
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(lock.contains("maya-2024"), "{}", lock);
+    assert!(
+        !lock.contains("studio-blender-tools"),
+        "studio-blender-tools should be gone:\n{}",
+        lock,
+    );
+}
+
+#[test]
+fn remove_refuses_to_empty_the_lockfile() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "maya-2024"])
+        .assert()
+        .success();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["remove", "maya"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty lockfile"));
+}
+
+#[test]
+fn remove_without_lockfile_fails() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["remove", "anything"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no anvil.lock to mutate"));
+}
+
 // ---- anvil lock --upgrade-package ----
 
 #[test]

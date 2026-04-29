@@ -154,6 +154,29 @@ pub enum Commands {
         packages: Vec<String>,
     },
 
+    /// Add packages to the project's locked request set.
+    ///
+    /// Reads anvil.lock (creating an empty request set if absent),
+    /// adds the given packages -- replacing any existing request for
+    /// the same name -- and re-resolves so the lockfile reflects the
+    /// new set.
+    Add {
+        /// Packages to add (e.g., maya-2024 arnold-7.2)
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+
+    /// Remove packages from the project's locked request set.
+    ///
+    /// Reads anvil.lock, drops every request whose package name
+    /// matches one of the given names, and re-resolves so the
+    /// lockfile reflects the smaller set.
+    Remove {
+        /// Package names to remove (e.g., arnold)
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+
     /// Scaffold a new package definition (or `--config` for the global config)
     Init {
         /// Package name (e.g., my-tools). Omit when using `--config`.
