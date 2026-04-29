@@ -198,6 +198,14 @@ impl Resolver {
         Ok(resolver)
     }
 
+    /// Replace this resolver's pins.  Used by `anvil lock
+    /// --upgrade-package` to reuse most of an existing lockfile
+    /// while letting a few names re-resolve to their highest match.
+    pub fn with_pins(mut self, pins: HashMap<String, Pin>) -> Self {
+        self.pins = pins;
+        self
+    }
+
     /// Compare each pin's recorded content hash against the package
     /// definition currently on disk.  Mismatches produce a warning so
     /// teams sharing a `package_paths` filesystem can detect upstream

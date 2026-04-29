@@ -126,6 +126,13 @@ pub enum Commands {
         /// the relevant platform.
         #[arg(long)]
         all_platforms: bool,
+
+        /// Re-resolve only this package name (repeatable), keeping
+        /// every other existing pin untouched.  Without this flag,
+        /// `anvil lock` re-resolves every package; with it, the
+        /// lockfile is updated surgically.
+        #[arg(long = "upgrade-package", value_name = "NAME")]
+        upgrade_packages: Vec<String>,
     },
 
     /// Save and restore complete resolved environments

@@ -78,8 +78,9 @@ fn main() -> Result<()> {
             packages,
             update: _,
             all_platforms,
+            upgrade_packages,
         } => {
-            cmd_lock(&config, &packages, refresh, all_platforms)?;
+            cmd_lock(&config, &packages, refresh, all_platforms, &upgrade_packages)?;
         }
         Commands::Context { action } => match action {
             ContextAction::Save { packages, output } => {
@@ -661,8 +662,31 @@ fn cmd_lock(
     packages: &[String],
     refresh: bool,
     all_platforms: bool,
+    upgrade_packages: &[String],
 ) -> Result<()> {
-    let resolver = Resolver::new_unlocked(config, refresh)?;
+    // For surgical upgrades, load the existing lockfile and reuse all
+    // pins except the names being upgraded.  Without --upgrade-package
+    // we still resolve fresh (the historical behaviour).
+    let resolver = if upgrade_packages.is_empty() {
+        Resolver::new_unlocked(config, refresh)?
+    } else {
+        let lock_path = Lockfile::find().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--upgrade-package needs an existing anvil.lock; run `anvil lock` first"
+            )
+        })?;
+        let existing = Lockfile::load(&lock_path)?;
+        let mut keep = existing.effective_pins(package::Package::current_platform());
+        for name in upgrade_packages {
+            if keep.remove(name).is_none() {
+                tracing::warn!(
+                    "--upgrade-package {}: no existing pin found; resolving fresh",
+                    name,
+                );
+            }
+        }
+        Resolver::new_unlocked(config, refresh)?.with_pins(keep)
+    };
 
     // Which platforms to resolve for.
     let targets: Vec<&str> = if all_platforms {

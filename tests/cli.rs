@@ -1206,6 +1206,85 @@ fn drift_warning_when_package_changes_after_lock() {
         .stderr(predicate::str::contains("widget-1.0"));
 }
 
+// ---- anvil lock --upgrade-package ----
+
+#[test]
+fn upgrade_package_only_re_resolves_named_package() {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    // Two python versions, two arnold versions.  Both packages
+    // accept any version of either dep.
+    for v in ["3.10", "3.11"] {
+        fs::write(
+            pkg_dir.join(format!("python-{}.yaml", v)),
+            format!("name: python\nversion: \"{}\"\n", v),
+        )
+        .unwrap();
+    }
+    for v in ["7.1", "7.2"] {
+        fs::write(
+            pkg_dir.join(format!("arnold-{}.yaml", v)),
+            format!("name: arnold\nversion: \"{}\"\n", v),
+        )
+        .unwrap();
+    }
+    fs::write(
+        pkg_dir.join("maya-2024.yaml"),
+        "name: maya\nversion: \"2024\"\nrequires:\n  - python\n  - arnold\n",
+    )
+    .unwrap();
+
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    let cfg = config_path.to_string_lossy().to_string();
+
+    // Initial lock — pins highest of each.
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+    let initial = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(initial.contains("version: '3.11'"), "{}", initial);
+    assert!(initial.contains("version: '7.2'"), "{}", initial);
+
+    // Hand-edit the lock to pin python at 3.10 (simulate a project
+    // that's been on 3.10 for a while).
+    let edited = initial
+        .replace("version: '3.11'", "version: '3.10'")
+        .replace("version: '7.2'", "version: '7.1'");
+    fs::write(dir.path().join("anvil.lock"), &edited).unwrap();
+
+    // Re-lock with --upgrade-package python: python should bump to
+    // 3.11, arnold should stay at the existing pin (7.1).
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024", "--upgrade-package", "python"])
+        .assert()
+        .success();
+    let after = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(after.contains("version: '3.11'"), "python should upgrade:\n{}", after);
+    assert!(after.contains("version: '7.1'"), "arnold should stay pinned:\n{}", after);
+    assert!(!after.contains("version: '7.2'"), "arnold should NOT bump to 7.2:\n{}", after);
+}
+
+#[test]
+fn upgrade_package_without_lockfile_fails() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024", "--upgrade-package", "python"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--upgrade-package needs an existing anvil.lock"));
+}
+
 // ---- anvil tree ----
 
 #[test]
