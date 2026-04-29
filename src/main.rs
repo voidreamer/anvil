@@ -17,7 +17,7 @@ mod shell;
 
 use cli::{Cli, Commands, ContextAction};
 use config::Config;
-use context::{ContextPackage, Lockfile, SavedContext};
+use context::{ContextPackage, Lockfile, Pin, SavedContext};
 use resolver::Resolver;
 
 fn main() -> Result<()> {
@@ -404,7 +404,13 @@ fn cmd_lock(config: &Config, packages: &[String], refresh: bool) -> Result<()> {
 
     let mut pins = std::collections::HashMap::new();
     for pkg in resolved.packages() {
-        pins.insert(pkg.name.clone(), pkg.version.clone());
+        pins.insert(
+            pkg.name.clone(),
+            Pin {
+                version: pkg.version.clone(),
+                content_hash: pkg.content_hash(),
+            },
+        );
     }
 
     let lockfile = Lockfile {

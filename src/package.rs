@@ -20,7 +20,7 @@ pub const EXE_SUFFIX: &str = ".exe";
 pub const EXE_SUFFIX: &str = "";
 
 /// A package definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Package {
     /// Package name
     pub name: String,
@@ -50,6 +50,13 @@ pub struct Package {
     /// Path to the package root (set after loading, omitted from package.yaml)
     #[serde(default)]
     pub root: PathBuf,
+
+    /// Path to the YAML file this package was loaded from.  Populated by
+    /// the loader; used to compute a content hash for lockfile drift
+    /// detection.  Skipped from package.yaml itself but kept in the scan
+    /// cache so we don't have to rediscover it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,16 +102,28 @@ impl Package {
             .map(|p| p.to_path_buf())
             .or_else(|| file_path.parent().map(|p| p.to_path_buf()))
             .unwrap_or_default();
+        package.source_path = Some(file_path.to_path_buf());
 
         // Apply variant for current platform
         package.apply_current_variant();
 
         Ok(package)
     }
-    
+
     /// Get the full package identifier (name-version)
     pub fn id(&self) -> String {
         format!("{}-{}", self.name, self.version)
+    }
+
+    /// Compute a SHA-256 hex digest of the package definition file.
+    /// Returns None if the source path isn't set or the file can't be read.
+    pub fn content_hash(&self) -> Option<String> {
+        use sha2::{Digest, Sha256};
+        let path = self.source_path.as_ref()?;
+        let bytes = std::fs::read(path).ok()?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        Some(format!("{:x}", hasher.finalize()))
     }
     
     /// Apply the variant matching the current platform
@@ -481,7 +500,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/opt/test/1.0"),
+            root: PathBuf::from("/opt/test/1.0"), source_path: None,
         };
         let env = HashMap::new();
         assert_eq!(
@@ -500,7 +519,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/opt/maya"),
+            root: PathBuf::from("/opt/maya"), source_path: None,
         };
         let env = HashMap::new();
         assert_eq!(pkg.expand_env_value("${NAME}-${VERSION}", &env), "maya-2024");
@@ -516,7 +535,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/tmp"),
+            root: PathBuf::from("/tmp"), source_path: None,
         };
         let env = HashMap::new();
         let expected = if cfg!(target_os = "windows") {
@@ -540,7 +559,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/tmp"),
+            root: PathBuf::from("/tmp"), source_path: None,
         };
         let env = HashMap::new();
         let expected = if cfg!(target_os = "windows") {
@@ -564,7 +583,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/tmp"),
+            root: PathBuf::from("/tmp"), source_path: None,
         };
         let env = HashMap::new();
         let home = dirs::home_dir().expect("test needs a HOME");
@@ -601,7 +620,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/tmp"),
+            root: PathBuf::from("/tmp"), source_path: None,
         };
         let env = HashMap::new();
         // No `~/` at start or after `:` / `;`, so nothing should change.
@@ -618,7 +637,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/tmp"),
+            root: PathBuf::from("/tmp"), source_path: None,
         };
         let mut env = HashMap::new();
         env.insert("HFS".into(), "/opt/houdini".into());

@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 
 use crate::cache;
 use crate::config::Config;
-use crate::context::Lockfile;
+use crate::context::{Lockfile, Pin};
 use crate::package::{tokenize_command, Package, PackageRequest, VersionConstraint};
 
 /// One constraint asked for a package, plus who asked.
@@ -134,8 +134,9 @@ pub struct Resolver {
     config: Config,
     /// Cache of loaded packages: name -> version -> Package
     package_cache: HashMap<String, HashMap<String, Package>>,
-    /// Version pins from a lockfile (empty when unlocked).
-    pins: HashMap<String, String>,
+    /// Pins from a lockfile (empty when unlocked).  Carries version
+    /// plus optional content hash for drift detection.
+    pins: HashMap<String, Pin>,
 }
 
 impl Resolver {
@@ -156,6 +157,7 @@ impl Resolver {
             pins,
         };
         resolver.load_packages(refresh)?;
+        resolver.verify_pin_hashes();
         Ok(resolver)
     }
 
@@ -168,6 +170,36 @@ impl Resolver {
         };
         resolver.load_packages(refresh)?;
         Ok(resolver)
+    }
+
+    /// Compare each pin's recorded content hash against the package
+    /// definition currently on disk.  Mismatches produce a warning so
+    /// teams sharing a `package_paths` filesystem can detect upstream
+    /// edits that would otherwise silently change resolution behaviour.
+    fn verify_pin_hashes(&self) {
+        for (name, pin) in &self.pins {
+            let Some(expected) = pin.content_hash.as_deref() else {
+                continue;
+            };
+            let Some(versions) = self.package_cache.get(name) else {
+                continue;
+            };
+            let Some(pkg) = versions.get(&pin.version) else {
+                continue;
+            };
+            if let Some(actual) = pkg.content_hash() {
+                if actual != expected {
+                    warn!(
+                        "lockfile drift: {}-{} content hash differs from anvil.lock \
+                         (expected {}, got {}) -- re-run `anvil lock` to refresh",
+                        name,
+                        pin.version,
+                        &expected[..12.min(expected.len())],
+                        &actual[..12.min(actual.len())],
+                    );
+                }
+            }
+        }
     }
 
     /// Load packages: try the cache first (unless `refresh`), fall back to a full scan.
@@ -373,20 +405,20 @@ impl Resolver {
 
         // Lockfile pin takes priority — but only if it satisfies the
         // request's constraint, otherwise we'd silently break the request.
-        if let Some(pinned) = self.pins.get(&request.name) {
-            if let Some(pkg) = versions.get(pinned) {
+        if let Some(pin) = self.pins.get(&request.name) {
+            if let Some(pkg) = versions.get(&pin.version) {
                 if request.matches(&pkg.version) {
-                    debug!("Using pinned version: {}-{}", request.name, pinned);
+                    debug!("Using pinned version: {}-{}", request.name, pin.version);
                     return Ok(pkg.clone());
                 }
                 warn!(
                     "Pinned version {}-{} does not satisfy {} (required by {}); resolving normally",
-                    request.name, pinned, request, requester,
+                    request.name, pin.version, request, requester,
                 );
             } else {
                 warn!(
                     "Pinned version {}-{} not found; resolving normally",
-                    request.name, pinned,
+                    request.name, pin.version,
                 );
             }
         }

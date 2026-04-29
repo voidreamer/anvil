@@ -1123,6 +1123,89 @@ fn missing_version_names_the_requester() {
         .stderr(predicate::str::contains("3.11"));
 }
 
+// ---- lockfile content hashes ----
+
+#[test]
+fn lock_records_content_hashes() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(lock.contains("content_hash:"), "lockfile should record hashes:\n{}", lock);
+    // SHA-256 hex digest is 64 chars; spot-check that something hex-shaped is there.
+    assert!(
+        lock.lines().any(|l| l.contains("content_hash:")
+            && l.split(':').last().unwrap().trim().len() >= 32),
+        "lockfile hash should be a long hex digest:\n{}",
+        lock,
+    );
+}
+
+#[test]
+fn legacy_string_form_lockfile_still_parses() {
+    let (dir, cfg) = setup_env();
+    // Write a legacy-format lockfile by hand (pre-0.5 string-valued pins).
+    fs::write(
+        dir.path().join("anvil.lock"),
+        "requests:\n  - maya-2024\npins:\n  maya: \"2024\"\n  python: \"3.11\"\n",
+    )
+    .unwrap();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["env", "maya-2024"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MAYA_VERSION=2024"));
+}
+
+#[test]
+fn drift_warning_when_package_changes_after_lock() {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    let pkg_path = pkg_dir.join("widget-1.0.yaml");
+    fs::write(
+        &pkg_path,
+        "name: widget\nversion: \"1.0\"\nenvironment:\n  WIDGET: original\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    let cfg = config_path.to_string_lossy().to_string();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "widget-1.0"])
+        .assert()
+        .success();
+
+    // Tamper: same version, different bytes.
+    fs::write(
+        &pkg_path,
+        "name: widget\nversion: \"1.0\"\nenvironment:\n  WIDGET: TAMPERED\n",
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("anvil").unwrap();
+    cmd.env("ANVIL_CONFIG", &cfg);
+    cmd.env("RUST_LOG", "anvil=warn");
+    cmd.current_dir(dir.path())
+        .args(["env", "widget-1.0", "--refresh"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("lockfile drift"))
+        .stderr(predicate::str::contains("widget-1.0"));
+}
+
 #[test]
 fn missing_dep_names_the_parent_package() {
     let dir = TempDir::new().unwrap();

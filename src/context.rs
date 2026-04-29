@@ -4,11 +4,54 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 // ---------------------------------------------------------------------------
 // Lockfile
 // ---------------------------------------------------------------------------
+
+/// One entry in `Lockfile.pins`.  Carries the version and an optional
+/// content hash so drift in shared package directories is detectable.
+///
+/// Deserializes from either the modern map form
+///   `python: { version: "3.11", content_hash: "..." }`
+/// or the pre-0.5 string form
+///   `python: "3.11"`
+/// so older `anvil.lock` files keep working.
+#[derive(Debug, Clone, Serialize)]
+pub struct Pin {
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Pin {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum PinForm {
+            Legacy(String),
+            Modern {
+                version: String,
+                #[serde(default)]
+                content_hash: Option<String>,
+            },
+        }
+        Ok(match PinForm::deserialize(deserializer)? {
+            PinForm::Legacy(version) => Pin {
+                version,
+                content_hash: None,
+            },
+            PinForm::Modern {
+                version,
+                content_hash,
+            } => Pin {
+                version,
+                content_hash,
+            },
+        })
+    }
+}
 
 /// Pins package versions for reproducible resolution.
 ///
@@ -19,8 +62,8 @@ use serde::{Deserialize, Serialize};
 pub struct Lockfile {
     /// Original package requests that produced this lockfile.
     pub requests: Vec<String>,
-    /// Pinned versions: package name -> exact version string.
-    pub pins: HashMap<String, String>,
+    /// Pinned versions: package name -> pin entry.
+    pub pins: HashMap<String, Pin>,
 }
 
 impl Lockfile {
