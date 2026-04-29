@@ -1055,3 +1055,724 @@ fn shell_help_exposes_shim_flags() {
         .stdout(predicate::str::contains("--env-only"))
         .stdout(predicate::str::contains("--no-sweep"));
 }
+
+// ---- resolver conflict diagnostics ----
+
+/// Set up a temp dir with two python versions and two packages that pin
+/// incompatible pythons.  Returns (TempDir, config_path).
+fn setup_conflicting_pythons() -> (TempDir, String) {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    for v in ["3.10", "3.11"] {
+        let d = pkg_dir.join(format!("python/{}", v));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("package.yaml"),
+            format!("name: python\nversion: \"{}\"\n", v),
+        )
+        .unwrap();
+    }
+
+    fs::write(
+        pkg_dir.join("alpha-1.0.yaml"),
+        "name: alpha\nversion: \"1.0\"\nrequires:\n  - python-3.10\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_dir.join("beta-1.0.yaml"),
+        "name: beta\nversion: \"1.0\"\nrequires:\n  - python-3.11\n",
+    )
+    .unwrap();
+
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    (dir, config_path.to_string_lossy().to_string())
+}
+
+#[test]
+fn conflict_lists_both_requesters_and_constraints() {
+    let (_dir, cfg) = setup_conflicting_pythons();
+    anvil(&cfg)
+        .args(["env", "alpha-1.0", "beta-1.0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("version conflict for 'python'"))
+        .stderr(predicate::str::contains("alpha-1.0 required python-3.10"))
+        .stderr(predicate::str::contains("beta-1.0 required python-3.11"))
+        .stderr(predicate::str::contains("INCOMPATIBLE"));
+}
+
+#[test]
+fn missing_version_names_the_requester() {
+    let (_dir, cfg) = setup_conflicting_pythons();
+    // Ask for a python version that doesn't exist; the error should
+    // attribute the failing constraint to the top-level request.
+    anvil(&cfg)
+        .args(["env", "python-3.99"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No version of 'python'"))
+        .stderr(predicate::str::contains("required by <request>"))
+        .stderr(predicate::str::contains("3.10"))
+        .stderr(predicate::str::contains("3.11"));
+}
+
+// ---- lockfile content hashes ----
+
+#[test]
+fn lock_records_content_hashes() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(lock.contains("content_hash:"), "lockfile should record hashes:\n{}", lock);
+    // SHA-256 hex digest is 64 chars; spot-check that something hex-shaped is there.
+    assert!(
+        lock.lines().any(|l| l.contains("content_hash:")
+            && l.split(':').last().unwrap().trim().len() >= 32),
+        "lockfile hash should be a long hex digest:\n{}",
+        lock,
+    );
+}
+
+#[test]
+fn legacy_string_form_lockfile_still_parses() {
+    let (dir, cfg) = setup_env();
+    // Write a legacy-format lockfile by hand (pre-0.5 string-valued pins).
+    fs::write(
+        dir.path().join("anvil.lock"),
+        "requests:\n  - maya-2024\npins:\n  maya: \"2024\"\n  python: \"3.11\"\n",
+    )
+    .unwrap();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["env", "maya-2024"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MAYA_VERSION=2024"));
+}
+
+#[test]
+fn drift_warning_when_package_changes_after_lock() {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    let pkg_path = pkg_dir.join("widget-1.0.yaml");
+    fs::write(
+        &pkg_path,
+        "name: widget\nversion: \"1.0\"\nenvironment:\n  WIDGET: original\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    let cfg = config_path.to_string_lossy().to_string();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "widget-1.0"])
+        .assert()
+        .success();
+
+    // Tamper: same version, different bytes.
+    fs::write(
+        &pkg_path,
+        "name: widget\nversion: \"1.0\"\nenvironment:\n  WIDGET: TAMPERED\n",
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("anvil").unwrap();
+    cmd.env("ANVIL_CONFIG", &cfg);
+    cmd.env("RUST_LOG", "anvil=warn");
+    cmd.current_dir(dir.path())
+        .args(["env", "widget-1.0", "--refresh"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("lockfile drift"))
+        .stderr(predicate::str::contains("widget-1.0"));
+}
+
+// ---- anvil add / anvil remove ----
+
+#[test]
+fn add_creates_lockfile_when_none_exists() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "maya-2024"])
+        .assert()
+        .success();
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(lock.contains("maya-2024"));
+    assert!(lock.contains("requests:"));
+}
+
+#[test]
+fn add_appends_to_existing_request_set() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "maya-2024"])
+        .assert()
+        .success();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "studio-blender-tools-1.0.0"])
+        .assert()
+        .success();
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(lock.contains("maya-2024"), "{}", lock);
+    assert!(lock.contains("studio-blender-tools-1.0.0"), "{}", lock);
+}
+
+#[test]
+fn add_replaces_request_with_same_name() {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    for v in ["1.0", "2.0"] {
+        fs::write(
+            pkg_dir.join(format!("widget-{}.yaml", v)),
+            format!("name: widget\nversion: \"{}\"\n", v),
+        )
+        .unwrap();
+    }
+    let cfg_path = dir.path().join("config.yaml");
+    fs::write(&cfg_path, format!("package_paths:\n  - {}\n", pkg_dir.display())).unwrap();
+    let cfg = cfg_path.to_string_lossy().to_string();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "widget-1.0"])
+        .assert()
+        .success();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "widget-2.0"])
+        .assert()
+        .success();
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    // Both requests for widget should not coexist; the latest add wins.
+    assert!(lock.contains("widget-2.0"), "{}", lock);
+    assert!(!lock.contains("widget-1.0"), "old version should be replaced:\n{}", lock);
+}
+
+#[test]
+fn remove_drops_requested_name() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "maya-2024"])
+        .assert()
+        .success();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "studio-blender-tools-1.0.0"])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["remove", "studio-blender-tools"])
+        .assert()
+        .success();
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(lock.contains("maya-2024"), "{}", lock);
+    assert!(
+        !lock.contains("studio-blender-tools"),
+        "studio-blender-tools should be gone:\n{}",
+        lock,
+    );
+}
+
+#[test]
+fn remove_refuses_to_empty_the_lockfile() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["add", "maya-2024"])
+        .assert()
+        .success();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["remove", "maya"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty lockfile"));
+}
+
+#[test]
+fn remove_without_lockfile_fails() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["remove", "anything"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no anvil.lock to mutate"));
+}
+
+// ---- anvil lock --upgrade-package ----
+
+#[test]
+fn upgrade_package_only_re_resolves_named_package() {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    // Two python versions, two arnold versions.  Both packages
+    // accept any version of either dep.
+    for v in ["3.10", "3.11"] {
+        fs::write(
+            pkg_dir.join(format!("python-{}.yaml", v)),
+            format!("name: python\nversion: \"{}\"\n", v),
+        )
+        .unwrap();
+    }
+    for v in ["7.1", "7.2"] {
+        fs::write(
+            pkg_dir.join(format!("arnold-{}.yaml", v)),
+            format!("name: arnold\nversion: \"{}\"\n", v),
+        )
+        .unwrap();
+    }
+    fs::write(
+        pkg_dir.join("maya-2024.yaml"),
+        "name: maya\nversion: \"2024\"\nrequires:\n  - python\n  - arnold\n",
+    )
+    .unwrap();
+
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    let cfg = config_path.to_string_lossy().to_string();
+
+    // Initial lock — pins highest of each.
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+    let initial = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(initial.contains("version: '3.11'"), "{}", initial);
+    assert!(initial.contains("version: '7.2'"), "{}", initial);
+
+    // Hand-edit the lock to pin python at 3.10 (simulate a project
+    // that's been on 3.10 for a while).
+    let edited = initial
+        .replace("version: '3.11'", "version: '3.10'")
+        .replace("version: '7.2'", "version: '7.1'");
+    fs::write(dir.path().join("anvil.lock"), &edited).unwrap();
+
+    // Re-lock with --upgrade-package python: python should bump to
+    // 3.11, arnold should stay at the existing pin (7.1).
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024", "--upgrade-package", "python"])
+        .assert()
+        .success();
+    let after = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    assert!(after.contains("version: '3.11'"), "python should upgrade:\n{}", after);
+    assert!(after.contains("version: '7.1'"), "arnold should stay pinned:\n{}", after);
+    assert!(!after.contains("version: '7.2'"), "arnold should NOT bump to 7.2:\n{}", after);
+}
+
+#[test]
+fn upgrade_package_without_lockfile_fails() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024", "--upgrade-package", "python"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--upgrade-package needs an existing anvil.lock"));
+}
+
+// ---- anvil tree ----
+
+#[test]
+fn tree_renders_dependency_graph_with_connectors() {
+    // Build a tree: app -> [foo, bar]; foo -> shared; bar -> shared.
+    // The second occurrence of `shared` should be marked `(*)` so
+    // the diamond doesn't print twice.
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    fs::write(
+        pkg_dir.join("shared-1.0.yaml"),
+        "name: shared\nversion: \"1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_dir.join("foo-1.0.yaml"),
+        "name: foo\nversion: \"1.0\"\nrequires:\n  - shared-1.0\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_dir.join("bar-1.0.yaml"),
+        "name: bar\nversion: \"1.0\"\nrequires:\n  - shared-1.0\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_dir.join("app-1.0.yaml"),
+        "name: app\nversion: \"1.0\"\nrequires:\n  - foo-1.0\n  - bar-1.0\n",
+    )
+    .unwrap();
+
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+
+    let assert = anvil(&config_path.to_string_lossy())
+        .args(["tree", "app-1.0"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+
+    assert!(stdout.starts_with("app-1.0"), "should print root first:\n{}", stdout);
+    assert!(stdout.contains("├── foo-1.0"), "non-last child uses ├──:\n{}", stdout);
+    assert!(stdout.contains("└── bar-1.0"), "last child uses └──:\n{}", stdout);
+    assert!(stdout.contains("shared-1.0"), "shared dep should appear:\n{}", stdout);
+    assert!(stdout.contains("(*)"), "repeat marker for diamond dep:\n{}", stdout);
+}
+
+// ---- anvil sync ----
+
+#[test]
+fn sync_succeeds_when_pinned_packages_are_present() {
+    // The test fixture's command targets point to placeholder paths
+    // that don't exist on disk, so sync prints warnings -- but as
+    // long as the pinned package definitions resolve and their
+    // content hashes match, sync should still exit 0.
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("maya-2024"))
+        .stdout(predicate::str::contains("python-3.11"))
+        .stdout(predicate::str::contains("0 failure(s)"));
+}
+
+#[test]
+fn sync_fails_when_pinned_version_missing() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    // Hand-edit the lock to a version that doesn't exist on disk.
+    let lock_path = dir.path().join("anvil.lock");
+    let original = fs::read_to_string(&lock_path).unwrap();
+    fs::write(&lock_path, original.replace("version: '2024'", "version: '1999'")).unwrap();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["sync"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("fail  maya-1999"))
+        .stderr(predicate::str::contains("anvil sync"));
+}
+
+#[test]
+fn sync_warns_on_hash_drift() {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    let pkg_path = pkg_dir.join("widget-1.0.yaml");
+    fs::write(
+        &pkg_path,
+        "name: widget\nversion: \"1.0\"\nenvironment:\n  WIDGET: original\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    let cfg = config_path.to_string_lossy().to_string();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "widget-1.0"])
+        .assert()
+        .success();
+
+    fs::write(
+        &pkg_path,
+        "name: widget\nversion: \"1.0\"\nenvironment:\n  WIDGET: tampered\n",
+    )
+    .unwrap();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["sync", "--refresh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("warn  widget-1.0"))
+        .stdout(predicate::str::contains("content hash drift"))
+        .stdout(predicate::str::contains("1 warning(s)"));
+}
+
+#[test]
+fn sync_fails_without_a_lockfile() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["sync"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no anvil.lock"));
+}
+
+// ---- --locked / --frozen ----
+
+#[test]
+fn locked_passes_when_lockfile_matches_disk() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--locked", "env", "maya-2024"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MAYA_VERSION=2024"));
+}
+
+#[test]
+fn locked_fails_when_lockfile_is_stale() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    // Hand-edit the lock to a version that doesn't exist on disk.
+    let lock_path = dir.path().join("anvil.lock");
+    let original = fs::read_to_string(&lock_path).unwrap();
+    let stale = original.replace("version: '2024'", "version: '1999'");
+    fs::write(&lock_path, &stale).unwrap();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--locked", "env", "maya-2024"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--locked: anvil.lock is stale"));
+}
+
+#[test]
+fn locked_fails_without_a_lockfile() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--locked", "env", "maya-2024"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--locked: no anvil.lock"));
+}
+
+#[test]
+fn frozen_uses_lockfile_only() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--frozen", "env", "maya-2024"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MAYA_VERSION=2024"));
+}
+
+#[test]
+fn frozen_fails_for_unpinned_package() {
+    let (dir, cfg) = setup_env();
+    // Lock only maya — python is a transitive dep that *will* be pinned.
+    // Then ask for studio-blender-tools which was never resolved/pinned.
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--frozen", "env", "studio-blender-tools-1.0.0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--frozen"))
+        .stderr(predicate::str::contains("studio-blender-tools"));
+}
+
+#[test]
+fn frozen_without_lockfile_fails() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--frozen", "env", "maya-2024"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--frozen requires anvil.lock"));
+}
+
+// ---- cross-platform lockfile ----
+
+/// Set up a temp dir with a package whose `variants:` block adds a
+/// different transitive dep on each platform, plus the per-platform
+/// candidate packages.  Returns (TempDir, config_path).
+fn setup_per_platform_variants() -> (TempDir, String) {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    // Three platform-specific runtimes that only one platform pulls in.
+    for (name, ver) in [("gcc-runtime", "7"), ("clang-runtime", "15"), ("msvc-runtime", "2022")] {
+        let d = pkg_dir.join(format!("{}/{}", name, ver));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("package.yaml"),
+            format!("name: {}\nversion: \"{}\"\n", name, ver),
+        )
+        .unwrap();
+    }
+
+    // omega-1.0 pulls in a different runtime on each platform.
+    fs::write(
+        pkg_dir.join("omega-1.0.yaml"),
+        r#"
+name: omega
+version: "1.0"
+variants:
+  - platform: linux
+    requires:
+      - gcc-runtime-7
+  - platform: macos
+    requires:
+      - clang-runtime-15
+  - platform: windows
+    requires:
+      - msvc-runtime-2022
+"#,
+    )
+    .unwrap();
+
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    (dir, config_path.to_string_lossy().to_string())
+}
+
+#[test]
+fn lock_all_platforms_records_per_platform_pins() {
+    let (dir, cfg) = setup_per_platform_variants();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "omega-1.0", "--all-platforms"])
+        .assert()
+        .success();
+
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    // omega is the same on every platform — common pin.
+    assert!(lock.contains("omega"), "omega should be pinned:\n{}", lock);
+    // Each runtime shows up under its platform overlay.
+    assert!(
+        lock.contains("platform_pins:"),
+        "expected platform_pins overlay:\n{}",
+        lock,
+    );
+    assert!(lock.contains("gcc-runtime"), "missing linux runtime:\n{}", lock);
+    assert!(lock.contains("clang-runtime"), "missing macos runtime:\n{}", lock);
+    assert!(lock.contains("msvc-runtime"), "missing windows runtime:\n{}", lock);
+    // Lockfile records which platforms it covers.
+    assert!(lock.contains("platforms:"), "missing platforms list:\n{}", lock);
+}
+
+#[test]
+fn current_platform_lock_skips_overlay() {
+    let (dir, cfg) = setup_per_platform_variants();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "omega-1.0"])
+        .assert()
+        .success();
+
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    // Without --all-platforms, only the running platform is locked.
+    // The overlay should be absent (skip_serializing_if = empty).
+    assert!(
+        !lock.contains("platform_pins:"),
+        "single-platform lock should not emit overlay:\n{}",
+        lock,
+    );
+}
+
+#[test]
+fn missing_dep_names_the_parent_package() {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    // alpha requires a package that doesn't exist anywhere.
+    fs::write(
+        pkg_dir.join("alpha-1.0.yaml"),
+        "name: alpha\nversion: \"1.0\"\nrequires:\n  - missing-pkg-1.0\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    anvil(&config_path.to_string_lossy())
+        .args(["env", "alpha-1.0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Package not found: 'missing-pkg'"))
+        .stderr(predicate::str::contains("required by alpha-1.0"));
+}

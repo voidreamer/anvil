@@ -17,6 +17,21 @@ pub struct Cli {
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
 
+    /// Verify that anvil.lock is up to date.  Re-resolves the locked
+    /// request set fresh and compares against the pins on disk; any
+    /// drift (different version, different content hash, missing or
+    /// extra package) fails the command.  Useful in CI.
+    #[arg(long, global = true, conflicts_with = "frozen")]
+    pub locked: bool,
+
+    /// Use anvil.lock verbatim and never fall back to fresh
+    /// resolution.  Any package the resolver would otherwise pick
+    /// from the package paths must already be pinned, otherwise the
+    /// command fails.  Useful for render farms and other non-mutating
+    /// runs that must never silently drift.
+    #[arg(long, global = true, conflicts_with = "locked")]
+    pub frozen: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -104,12 +119,62 @@ pub enum Commands {
         /// Re-resolve even if anvil.lock already exists
         #[arg(long)]
         update: bool,
+
+        /// Resolve for every supported platform (linux, macos, windows)
+        /// and union the results, so a single lockfile is correct on
+        /// any of them.  Variant-specific `requires:` are recorded under
+        /// the relevant platform.
+        #[arg(long)]
+        all_platforms: bool,
+
+        /// Re-resolve only this package name (repeatable), keeping
+        /// every other existing pin untouched.  Without this flag,
+        /// `anvil lock` re-resolves every package; with it, the
+        /// lockfile is updated surgically.
+        #[arg(long = "upgrade-package", value_name = "NAME")]
+        upgrade_packages: Vec<String>,
     },
 
     /// Save and restore complete resolved environments
     Context {
         #[command(subcommand)]
         action: ContextAction,
+    },
+
+    /// Verify that every pin in anvil.lock is reachable, hash-matching,
+    /// and that each pinned package's commands resolve to existing
+    /// executables.  Read-only; useful before farm jobs that must not
+    /// fail mid-run on a missing alias.
+    Sync,
+
+    /// Print the dependency tree for a set of packages.
+    Tree {
+        /// Packages to resolve and visualise.
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+
+    /// Add packages to the project's locked request set.
+    ///
+    /// Reads anvil.lock (creating an empty request set if absent),
+    /// adds the given packages -- replacing any existing request for
+    /// the same name -- and re-resolves so the lockfile reflects the
+    /// new set.
+    Add {
+        /// Packages to add (e.g., maya-2024 arnold-7.2)
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+
+    /// Remove packages from the project's locked request set.
+    ///
+    /// Reads anvil.lock, drops every request whose package name
+    /// matches one of the given names, and re-resolves so the
+    /// lockfile reflects the smaller set.
+    Remove {
+        /// Package names to remove (e.g., arnold)
+        #[arg(required = true)]
+        names: Vec<String>,
     },
 
     /// Scaffold a new package definition (or `--config` for the global config)

@@ -20,7 +20,7 @@ pub const EXE_SUFFIX: &str = ".exe";
 pub const EXE_SUFFIX: &str = "";
 
 /// A package definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Package {
     /// Package name
     pub name: String,
@@ -50,6 +50,13 @@ pub struct Package {
     /// Path to the package root (set after loading, omitted from package.yaml)
     #[serde(default)]
     pub root: PathBuf,
+
+    /// Path to the YAML file this package was loaded from.  Populated by
+    /// the loader; used to compute a content hash for lockfile drift
+    /// detection.  Skipped from package.yaml itself but kept in the scan
+    /// cache so we don't have to rediscover it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +87,11 @@ impl Package {
 
     /// Load a package from a YAML file directly.
     /// If `root` is None, the parent directory of the file is used as the package root.
+    ///
+    /// Variants are NOT applied here.  The caller (typically the resolver)
+    /// chooses a target platform and calls `with_variant_for` to materialise
+    /// a per-platform copy.  This lets the resolver do cross-platform lock
+    /// resolution from a single cached scan.
     pub fn load_from_file(file_path: &Path, root: Option<&Path>) -> Result<Self> {
         if !file_path.exists() {
             anyhow::bail!("Package file not found: {:?}", file_path);
@@ -95,41 +107,59 @@ impl Package {
             .map(|p| p.to_path_buf())
             .or_else(|| file_path.parent().map(|p| p.to_path_buf()))
             .unwrap_or_default();
-
-        // Apply variant for current platform
-        package.apply_current_variant();
+        package.source_path = Some(file_path.to_path_buf());
 
         Ok(package)
     }
-    
+
     /// Get the full package identifier (name-version)
     pub fn id(&self) -> String {
         format!("{}-{}", self.name, self.version)
     }
+
+    /// Compute a SHA-256 hex digest of the package definition file.
+    /// Returns None if the source path isn't set or the file can't be read.
+    pub fn content_hash(&self) -> Option<String> {
+        use sha2::{Digest, Sha256};
+        let path = self.source_path.as_ref()?;
+        let bytes = std::fs::read(path).ok()?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        Some(format!("{:x}", hasher.finalize()))
+    }
     
-    /// Apply the variant matching the current platform
-    fn apply_current_variant(&mut self) {
-        let current_platform = if cfg!(target_os = "linux") {
-            "linux"
+    /// The platform name the running binary identifies as
+    /// (linux/macos/windows), or None on unsupported targets.
+    pub fn current_platform() -> Option<&'static str> {
+        if cfg!(target_os = "linux") {
+            Some("linux")
         } else if cfg!(target_os = "windows") {
-            "windows"
+            Some("windows")
         } else if cfg!(target_os = "macos") {
-            "macos"
+            Some("macos")
         } else {
-            return;
-        };
-        
-        for variant in &self.variants {
-            if variant.platform.as_deref() == Some(current_platform) {
-                // Merge variant requires
-                self.requires.extend(variant.requires.clone());
-                
-                // Merge variant environment
-                for (key, value) in &variant.environment {
-                    self.environment.insert(key.clone(), value.clone());
+            None
+        }
+    }
+
+    /// Return a copy of this package with the variant for `platform`
+    /// merged into its requires/environment.  If `platform` is None,
+    /// the current target's platform is used; on unsupported platforms
+    /// no variant is applied.
+    pub fn with_variant_for(&self, platform: Option<&str>) -> Self {
+        let mut out = self.clone();
+        let target = platform.or(Self::current_platform());
+        if let Some(target) = target {
+            for variant in &self.variants {
+                if variant.platform.as_deref() == Some(target) {
+                    out.requires.extend(variant.requires.clone());
+                    for (key, value) in &variant.environment {
+                        out.environment.insert(key.clone(), value.clone());
+                    }
                 }
             }
         }
+        out
     }
     
     /// Expand environment variables and tilde in a value
@@ -233,6 +263,24 @@ pub enum VersionConstraint {
     Any,
 }
 
+impl VersionConstraint {
+    /// Check if a version satisfies this constraint.
+    pub fn matches(&self, version: &str) -> bool {
+        match self {
+            VersionConstraint::Exact(v) => version == v,
+            VersionConstraint::Minimum(min) => {
+                version_compare(version, min) >= std::cmp::Ordering::Equal
+            }
+            VersionConstraint::Range(min, max) => {
+                version_compare(version, min) >= std::cmp::Ordering::Equal
+                    && version_compare(version, max) <= std::cmp::Ordering::Equal
+            }
+            VersionConstraint::OneOf(versions) => versions.contains(&version.to_string()),
+            VersionConstraint::Any => true,
+        }
+    }
+}
+
 impl PackageRequest {
     /// Parse a package request string.
     ///
@@ -286,19 +334,29 @@ impl PackageRequest {
         })
     }
     
-    /// Check if a version matches this constraint
+    /// Check if a version matches this request's constraint.
     pub fn matches(&self, version: &str) -> bool {
+        self.version_constraint.matches(version)
+    }
+}
+
+impl std::fmt::Display for VersionConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VersionConstraint::Exact(v) => write!(f, "{}", v),
+            VersionConstraint::Minimum(v) => write!(f, "{}+", v),
+            VersionConstraint::Range(a, b) => write!(f, "{}..{}", a, b),
+            VersionConstraint::OneOf(vs) => write!(f, "{}", vs.join("|")),
+            VersionConstraint::Any => write!(f, "*"),
+        }
+    }
+}
+
+impl std::fmt::Display for PackageRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.version_constraint {
-            VersionConstraint::Exact(v) => version == v,
-            VersionConstraint::Minimum(min) => {
-                version_compare(version, min) >= std::cmp::Ordering::Equal
-            }
-            VersionConstraint::Range(min, max) => {
-                version_compare(version, min) >= std::cmp::Ordering::Equal
-                    && version_compare(version, max) <= std::cmp::Ordering::Equal
-            }
-            VersionConstraint::OneOf(versions) => versions.contains(&version.to_string()),
-            VersionConstraint::Any => true,
+            VersionConstraint::Any => write!(f, "{}", self.name),
+            c => write!(f, "{}-{}", self.name, c),
         }
     }
 }
@@ -453,7 +511,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/opt/test/1.0"),
+            root: PathBuf::from("/opt/test/1.0"), source_path: None,
         };
         let env = HashMap::new();
         assert_eq!(
@@ -472,7 +530,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/opt/maya"),
+            root: PathBuf::from("/opt/maya"), source_path: None,
         };
         let env = HashMap::new();
         assert_eq!(pkg.expand_env_value("${NAME}-${VERSION}", &env), "maya-2024");
@@ -488,7 +546,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/tmp"),
+            root: PathBuf::from("/tmp"), source_path: None,
         };
         let env = HashMap::new();
         let expected = if cfg!(target_os = "windows") {
@@ -512,7 +570,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/tmp"),
+            root: PathBuf::from("/tmp"), source_path: None,
         };
         let env = HashMap::new();
         let expected = if cfg!(target_os = "windows") {
@@ -536,7 +594,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/tmp"),
+            root: PathBuf::from("/tmp"), source_path: None,
         };
         let env = HashMap::new();
         let home = dirs::home_dir().expect("test needs a HOME");
@@ -573,7 +631,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/tmp"),
+            root: PathBuf::from("/tmp"), source_path: None,
         };
         let env = HashMap::new();
         // No `~/` at start or after `:` / `;`, so nothing should change.
@@ -590,7 +648,7 @@ mod tests {
             environment: IndexMap::new(),
             commands: HashMap::new(),
             variants: vec![],
-            root: PathBuf::from("/tmp"),
+            root: PathBuf::from("/tmp"), source_path: None,
         };
         let mut env = HashMap::new();
         env.insert("HFS".into(), "/opt/houdini".into());

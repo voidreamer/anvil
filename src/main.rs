@@ -17,7 +17,7 @@ mod shell;
 
 use cli::{Cli, Commands, ContextAction};
 use config::Config;
-use context::{ContextPackage, Lockfile, SavedContext};
+use context::{ContextPackage, Lockfile, Pin, SavedContext};
 use resolver::Resolver;
 
 fn main() -> Result<()> {
@@ -46,16 +46,24 @@ fn main() -> Result<()> {
     // Load config
     let config = Config::load()?;
     let refresh = cli.refresh;
+    let frozen = cli.frozen;
+
+    // --locked: re-resolve the locked request set fresh and diff
+    // against the pins on disk before running any command.  Any drift
+    // fails the run.
+    if cli.locked {
+        verify_lockfile_fresh(&config, refresh)?;
+    }
 
     match cli.command {
         Commands::Env { packages, export, json } => {
-            cmd_env(&config, &packages, export, json, refresh)?;
+            cmd_env(&config, &packages, export, json, refresh, frozen)?;
         }
         Commands::Run { packages, env_vars, command } => {
-            cmd_run(&config, &packages, &env_vars, &command, refresh)?;
+            cmd_run(&config, &packages, &env_vars, &command, refresh, frozen)?;
         }
         Commands::Shell { packages, shell, env_only, no_sweep } => {
-            cmd_shell(&config, &packages, shell, refresh, env_only, no_sweep)?;
+            cmd_shell(&config, &packages, shell, refresh, env_only, no_sweep, frozen)?;
         }
         Commands::List { package } => {
             cmd_list(&config, package, refresh)?;
@@ -66,12 +74,17 @@ fn main() -> Result<()> {
         Commands::Validate { package, strict } => {
             cmd_validate(&config, package, strict, refresh)?;
         }
-        Commands::Lock { packages, update: _ } => {
-            cmd_lock(&config, &packages, refresh)?;
+        Commands::Lock {
+            packages,
+            update: _,
+            all_platforms,
+            upgrade_packages,
+        } => {
+            cmd_lock(&config, &packages, refresh, all_platforms, &upgrade_packages)?;
         }
         Commands::Context { action } => match action {
             ContextAction::Save { packages, output } => {
-                cmd_context_save(&config, &packages, &output, refresh)?;
+                cmd_context_save(&config, &packages, &output, refresh, frozen)?;
             }
             ContextAction::Show { file, json, export } => {
                 cmd_context_show(&file, json, export)?;
@@ -99,13 +112,71 @@ fn main() -> Result<()> {
             Cli::print_completions(shell);
         }
         Commands::Wrap { packages, dir, shell } => {
-            cmd_wrap(&config, &packages, &dir, &shell, refresh)?;
+            cmd_wrap(&config, &packages, &dir, &shell, refresh, frozen)?;
+        }
+        Commands::Sync => {
+            cmd_sync(&config, refresh)?;
+        }
+        Commands::Tree { packages } => {
+            cmd_tree(&config, &packages, refresh, frozen)?;
+        }
+        Commands::Add { packages } => {
+            cmd_add(&config, &packages, refresh)?;
+        }
+        Commands::Remove { names } => {
+            cmd_remove(&config, &names, refresh)?;
         }
         Commands::Publish { target, path, flat } => {
             cmd_publish(&target, path.as_deref(), flat)?;
         }
     }
 
+    Ok(())
+}
+
+/// Helper: build a Resolver honouring the `--frozen` flag.
+fn build_resolver(config: &Config, refresh: bool, frozen: bool) -> Result<Resolver> {
+    if frozen {
+        Resolver::new_frozen(config, refresh)
+    } else {
+        Resolver::new(config, refresh)
+    }
+}
+
+/// Verify that anvil.lock matches a fresh resolution of its own
+/// recorded request set.  Any drift -- different version, different
+/// content hash, missing or extra package -- aborts with a diff.
+/// Called from `main` when `--locked` is set.
+fn verify_lockfile_fresh(config: &Config, refresh: bool) -> Result<()> {
+    let lock_path = Lockfile::find()
+        .ok_or_else(|| anyhow::anyhow!("--locked: no anvil.lock found in this directory or any parent"))?;
+    let lockfile = Lockfile::load(&lock_path)?;
+    let current = package::Package::current_platform();
+    let expected = lockfile.effective_pins(current);
+
+    // Resolve fresh against the same request set.
+    let resolver = Resolver::new_unlocked(config, refresh)?;
+    let resolved = resolver.resolve(&lockfile.requests)?;
+    let mut actual = std::collections::HashMap::new();
+    for pkg in resolved.packages() {
+        actual.insert(
+            pkg.name.clone(),
+            Pin {
+                version: pkg.version.clone(),
+                content_hash: pkg.content_hash(),
+            },
+        );
+    }
+
+    let diffs = Lockfile::diff_pins(&expected, &actual);
+    if !diffs.is_empty() {
+        let mut msg = String::from("--locked: anvil.lock is stale\n");
+        for d in &diffs {
+            msg.push_str(&format!("  - {}\n", d));
+        }
+        msg.push_str("Re-run `anvil lock` to refresh.");
+        anyhow::bail!(msg);
+    }
     Ok(())
 }
 
@@ -116,8 +187,9 @@ fn cmd_env(
     export: bool,
     json: bool,
     refresh: bool,
+    frozen: bool,
 ) -> Result<()> {
-    let resolver = Resolver::new(config, refresh)?;
+    let resolver = build_resolver(config, refresh, frozen)?;
     let resolved = resolver.resolve(packages)?;
     let env = resolved.environment();
 
@@ -143,13 +215,14 @@ fn cmd_run(
     env_vars: &[String],
     command: &[String],
     refresh: bool,
+    frozen: bool,
 ) -> Result<()> {
     use std::process::Command;
 
     // Pre-resolve hooks
     Config::run_hooks(&config.hooks.pre_resolve, &std::env::vars().collect())?;
 
-    let resolver = Resolver::new(config, refresh)?;
+    let resolver = build_resolver(config, refresh, frozen)?;
     let resolved = resolver.resolve(packages)?;
     let mut env = resolved.environment();
 
@@ -214,8 +287,9 @@ fn cmd_shell(
     refresh: bool,
     env_only: bool,
     no_sweep: bool,
+    frozen: bool,
 ) -> Result<()> {
-    let resolver = Resolver::new(config, refresh)?;
+    let resolver = build_resolver(config, refresh, frozen)?;
     let resolved = resolver.resolve(packages)?;
     let mut env = resolved.environment();
 
@@ -393,32 +467,393 @@ fn cmd_validate(
 }
 
 // ---------------------------------------------------------------------------
+// Add / Remove
+// ---------------------------------------------------------------------------
+
+/// Read the existing lockfile's request set (or empty if there isn't
+/// one), apply `mutate`, and re-lock.  `mutate` is given the current
+/// request list and returns the new one.  Other lock options
+/// (`--all-platforms`, `--upgrade-package`) intentionally don't apply
+/// here — `anvil add` / `anvil remove` are the simple "edit the
+/// project's package set" path; advanced cases still call `anvil
+/// lock` directly.
+fn re_lock_with<F>(config: &Config, refresh: bool, mutate: F) -> Result<()>
+where
+    F: FnOnce(Vec<String>) -> Vec<String>,
+{
+    let starting = match Lockfile::find() {
+        Some(p) => Lockfile::load(&p)?.requests,
+        None => Vec::new(),
+    };
+    let new_requests = mutate(starting);
+    if new_requests.is_empty() {
+        // Don't write an empty lockfile — that's an unusual state and
+        // probably the user removed too much by mistake.
+        anyhow::bail!(
+            "no packages would remain after this change; refusing to write an empty lockfile"
+        );
+    }
+    cmd_lock(config, &new_requests, refresh, false, &[])
+}
+
+fn cmd_add(config: &Config, additions: &[String], refresh: bool) -> Result<()> {
+    re_lock_with(config, refresh, |existing| {
+        // Replace any existing request whose package name matches one
+        // of the names being added — `anvil add maya-2025` should
+        // bump a previously-pinned `maya-2024`.
+        let new_names: std::collections::HashSet<String> = additions
+            .iter()
+            .filter_map(|s| package::PackageRequest::parse(s).ok().map(|r| r.name))
+            .collect();
+        let mut out: Vec<String> = existing
+            .into_iter()
+            .filter(|s| match package::PackageRequest::parse(s) {
+                Ok(r) => !new_names.contains(&r.name),
+                Err(_) => true,
+            })
+            .collect();
+        for a in additions {
+            out.push(a.clone());
+        }
+        out
+    })
+}
+
+fn cmd_remove(config: &Config, names_to_remove: &[String], refresh: bool) -> Result<()> {
+    if Lockfile::find().is_none() {
+        anyhow::bail!("anvil remove: no anvil.lock to mutate -- run `anvil add` or `anvil lock` first");
+    }
+    let removed_names: std::collections::HashSet<&str> =
+        names_to_remove.iter().map(String::as_str).collect();
+    re_lock_with(config, refresh, |existing| {
+        existing
+            .into_iter()
+            .filter(|s| match package::PackageRequest::parse(s) {
+                Ok(r) => !removed_names.contains(r.name.as_str()),
+                Err(_) => true,
+            })
+            .collect()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tree
+// ---------------------------------------------------------------------------
+
+/// Print the resolved dependency graph as an ASCII tree.  Each top-level
+/// request is a root; transitive `requires` form the children.  A node
+/// that's already been printed once is shown as `name-version (*)` so
+/// shared deps don't multiply the output and cycles terminate.
+fn cmd_tree(
+    config: &Config,
+    packages: &[String],
+    refresh: bool,
+    frozen: bool,
+) -> Result<()> {
+    use std::collections::{HashMap, HashSet};
+
+    let resolver = build_resolver(config, refresh, frozen)?;
+    let resolved = resolver.resolve(packages)?;
+
+    let by_name: HashMap<String, &package::Package> = resolved
+        .packages()
+        .iter()
+        .map(|p| (p.name.clone(), p))
+        .collect();
+
+    let mut shown: HashSet<String> = HashSet::new();
+
+    for (i, req) in packages.iter().enumerate() {
+        let request = match package::PackageRequest::parse(req) {
+            Ok(r) => r,
+            Err(_) => {
+                println!("{}  (unparseable request)", req);
+                continue;
+            }
+        };
+        let Some(pkg) = by_name.get(&request.name) else {
+            println!("{}  (not in resolution)", req);
+            continue;
+        };
+        if i > 0 {
+            println!();
+        }
+        // Roots print without a connector; descendants print under
+        // `print_descendants` which manages the column drawing.
+        let id = pkg.id();
+        let suffix = if shown.contains(&id) { " (*)" } else { "" };
+        println!("{}{}", id, suffix);
+        if shown.contains(&id) {
+            continue;
+        }
+        shown.insert(id);
+        print_descendants(pkg, &by_name, &mut shown, "");
+    }
+
+    Ok(())
+}
+
+/// Print the dependency subtree of `parent`.  `prefix` is the column
+/// drawing accumulated from ancestor branches ("│   " when the
+/// ancestor was a non-last sibling, "    " when it was last).
+fn print_descendants(
+    parent: &package::Package,
+    by_name: &std::collections::HashMap<String, &package::Package>,
+    shown: &mut std::collections::HashSet<String>,
+    prefix: &str,
+) {
+    let mut deps: Vec<&package::Package> = Vec::new();
+    for dep_str in &parent.requires {
+        let Ok(req) = package::PackageRequest::parse(dep_str) else { continue };
+        if let Some(dep) = by_name.get(&req.name) {
+            deps.push(*dep);
+        }
+    }
+    let n = deps.len();
+    for (i, dep) in deps.iter().enumerate() {
+        let is_last = i + 1 == n;
+        let connector = if is_last { "└── " } else { "├── " };
+        let id = dep.id();
+        let already = shown.contains(&id);
+        let suffix = if already { " (*)" } else { "" };
+        println!("{}{}{}{}", prefix, connector, id, suffix);
+        if already {
+            continue;
+        }
+        shown.insert(id);
+        let next_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
+        print_descendants(dep, by_name, shown, &next_prefix);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sync
+// ---------------------------------------------------------------------------
+
+/// Verify every pin in anvil.lock against the package paths on disk.
+/// Walks pins (current-platform overlay applied), and for each:
+///   - confirms the pinned name+version exists on disk
+///   - compares content hashes (if recorded) and reports drift
+///   - validates command-alias targets resolve to executables
+/// Returns non-zero on any failure; warnings (hash drift, broken
+/// command targets) print but don't change the exit code.
+fn cmd_sync(config: &Config, refresh: bool) -> Result<()> {
+    let lock_path = Lockfile::find()
+        .ok_or_else(|| anyhow::anyhow!("anvil sync: no anvil.lock found in this directory or any parent"))?;
+    let lockfile = Lockfile::load(&lock_path)?;
+    let current = package::Package::current_platform();
+    let pins = lockfile.effective_pins(current);
+
+    let resolver = Resolver::new_unlocked(config, refresh)?;
+
+    let platform_label = current.unwrap_or("unknown");
+    println!("Checking {} for {}: {} pin(s)", lock_path.display(), platform_label, pins.len());
+
+    let mut ok = 0usize;
+    let mut warnings = 0usize;
+    let mut failures = 0usize;
+    let mut names: Vec<&String> = pins.keys().collect();
+    names.sort();
+
+    for name in names {
+        let pin = &pins[name];
+        let id = format!("{}-{}", name, pin.version);
+
+        // Existence check.
+        let pkg = match resolver.get_package(&id) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("  fail  {} -- {}", id, e);
+                failures += 1;
+                continue;
+            }
+        };
+
+        // Content hash drift.
+        if let Some(expected) = &pin.content_hash {
+            match pkg.content_hash() {
+                Some(actual) if &actual != expected => {
+                    println!(
+                        "  warn  {} -- content hash drift (locked {}, on-disk {})",
+                        id,
+                        &expected[..12.min(expected.len())],
+                        &actual[..12.min(actual.len())],
+                    );
+                    warnings += 1;
+                    continue;
+                }
+                None => {
+                    println!("  warn  {} -- pinned hash present but file unreadable", id);
+                    warnings += 1;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        // Validate command targets.
+        match resolver.validate_package_report(&id) {
+            Ok(problems) if !problems.is_empty() => {
+                println!("  warn  {} -- {} command issue(s):", id, problems.len());
+                for p in &problems {
+                    println!("          {}", p);
+                }
+                warnings += 1;
+            }
+            Ok(_) => {
+                println!("  ok    {}", id);
+                ok += 1;
+            }
+            Err(e) => {
+                println!("  fail  {} -- {}", id, e);
+                failures += 1;
+            }
+        }
+    }
+
+    println!(
+        "{} ok, {} warning(s), {} failure(s)",
+        ok, warnings, failures,
+    );
+    if failures > 0 {
+        anyhow::bail!("anvil sync: {} pin(s) failed verification", failures);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Lock
 // ---------------------------------------------------------------------------
 
 /// Resolve packages and write pinned versions to `anvil.lock`.
-fn cmd_lock(config: &Config, packages: &[String], refresh: bool) -> Result<()> {
-    // Always resolve fresh (ignore existing lockfile).
-    let resolver = Resolver::new_unlocked(config, refresh)?;
-    let resolved = resolver.resolve(packages)?;
+///
+/// When `all_platforms` is true, the resolver runs once per supported
+/// platform and the resulting pins are unioned: pins shared by every
+/// platform live in `pins`, and pins that differ live under
+/// `platform_pins[<platform>]`.  This makes a single lockfile correct
+/// on Linux, macOS, and Windows even when a package's variant block
+/// pulls in different transitive deps per platform.
+fn cmd_lock(
+    config: &Config,
+    packages: &[String],
+    refresh: bool,
+    all_platforms: bool,
+    upgrade_packages: &[String],
+) -> Result<()> {
+    // For surgical upgrades, load the existing lockfile and reuse all
+    // pins except the names being upgraded.  Without --upgrade-package
+    // we still resolve fresh (the historical behaviour).
+    let resolver = if upgrade_packages.is_empty() {
+        Resolver::new_unlocked(config, refresh)?
+    } else {
+        let lock_path = Lockfile::find().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--upgrade-package needs an existing anvil.lock; run `anvil lock` first"
+            )
+        })?;
+        let existing = Lockfile::load(&lock_path)?;
+        let mut keep = existing.effective_pins(package::Package::current_platform());
+        for name in upgrade_packages {
+            if keep.remove(name).is_none() {
+                tracing::warn!(
+                    "--upgrade-package {}: no existing pin found; resolving fresh",
+                    name,
+                );
+            }
+        }
+        Resolver::new_unlocked(config, refresh)?.with_pins(keep)
+    };
 
-    let mut pins = std::collections::HashMap::new();
-    for pkg in resolved.packages() {
-        pins.insert(pkg.name.clone(), pkg.version.clone());
+    // Which platforms to resolve for.
+    let targets: Vec<&str> = if all_platforms {
+        vec!["linux", "macos", "windows"]
+    } else {
+        match package::Package::current_platform() {
+            Some(p) => vec![p],
+            None => vec![],
+        }
+    };
+
+    // Resolve per platform.
+    type PinMap = std::collections::HashMap<String, Pin>;
+    let mut per_platform: std::collections::BTreeMap<String, PinMap> =
+        std::collections::BTreeMap::new();
+    for &platform in &targets {
+        let resolved = resolver.resolve_for_platform(packages, Some(platform))?;
+        let mut pins = PinMap::new();
+        for pkg in resolved.packages() {
+            pins.insert(
+                pkg.name.clone(),
+                Pin {
+                    version: pkg.version.clone(),
+                    content_hash: pkg.content_hash(),
+                },
+            );
+        }
+        per_platform.insert(platform.to_string(), pins);
+    }
+
+    // Union: any (name, version, hash) shared by *every* resolved
+    // platform goes into common `pins`; the rest goes under
+    // `platform_pins`.
+    let mut common: PinMap = std::collections::HashMap::new();
+    let mut platform_pins: std::collections::HashMap<String, PinMap> =
+        std::collections::HashMap::new();
+
+    if let Some(first) = per_platform.values().next().cloned() {
+        for (name, pin) in first {
+            let same_everywhere = per_platform.values().all(|m| {
+                m.get(&name)
+                    .map(|p| p.version == pin.version && p.content_hash == pin.content_hash)
+                    .unwrap_or(false)
+            });
+            if same_everywhere {
+                common.insert(name, pin);
+            }
+        }
+    }
+    for (platform, pins) in &per_platform {
+        for (name, pin) in pins {
+            if !common.contains_key(name) {
+                platform_pins
+                    .entry(platform.clone())
+                    .or_default()
+                    .insert(name.clone(), pin.clone());
+            }
+        }
     }
 
     let lockfile = Lockfile {
         requests: packages.to_vec(),
-        pins,
+        platforms: targets.iter().map(|s| s.to_string()).collect(),
+        pins: common,
+        platform_pins,
     };
 
     let lock_path = std::path::PathBuf::from("anvil.lock");
     lockfile.save(&lock_path)?;
 
-    println!("Locked {} packages to anvil.lock:", resolved.packages().len());
-    for pkg in resolved.packages() {
-        println!("  {}-{}", pkg.name, pkg.version);
+    let total: usize = per_platform.values().map(|m| m.len()).sum();
+    println!(
+        "Locked {} pin(s) across {} platform(s) to anvil.lock",
+        lockfile.pins.len()
+            + lockfile
+                .platform_pins
+                .values()
+                .map(|m| m.len())
+                .sum::<usize>(),
+        targets.len(),
+    );
+    for (name, pin) in &lockfile.pins {
+        println!("  {}-{}", name, pin.version);
     }
+    for (platform, pins) in &lockfile.platform_pins {
+        println!("  [{}]", platform);
+        for (name, pin) in pins {
+            println!("    {}-{}", name, pin.version);
+        }
+    }
+    let _ = total; // touched for clarity above
 
     Ok(())
 }
@@ -433,8 +868,9 @@ fn cmd_context_save(
     packages: &[String],
     output: &str,
     refresh: bool,
+    frozen: bool,
 ) -> Result<()> {
-    let resolver = Resolver::new(config, refresh)?;
+    let resolver = build_resolver(config, refresh, frozen)?;
     let resolved = resolver.resolve(packages)?;
     let env = resolved.environment();
 
@@ -630,8 +1066,9 @@ fn cmd_wrap(
     dir: &str,
     wrapper_shell: &str,
     refresh: bool,
+    frozen: bool,
 ) -> Result<()> {
-    let resolver = Resolver::new(config, refresh)?;
+    let resolver = build_resolver(config, refresh, frozen)?;
     let resolved = resolver.resolve(packages)?;
     let commands = resolved.commands();
 
