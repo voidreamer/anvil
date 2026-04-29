@@ -879,6 +879,170 @@ fn publish_refuses_overwrite() {
         .failure();
 }
 
+// ---- first-run hints / init --config ----
+
+#[test]
+fn list_emits_hint_when_no_packages_found() {
+    // Config exists but points at an empty directory: list should emit a
+    // hint to stderr instead of staying silent.
+    let dir = TempDir::new().unwrap();
+    let empty_pkg_dir = dir.path().join("empty-packages");
+    fs::create_dir_all(&empty_pkg_dir).unwrap();
+    let cfg_path = dir.path().join("config.yaml");
+    fs::write(
+        &cfg_path,
+        format!("package_paths:\n  - {}\n", empty_pkg_dir.display()),
+    )
+    .unwrap();
+
+    anvil(cfg_path.to_str().unwrap())
+        .args(["list"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("No packages found"));
+}
+
+#[test]
+fn list_hint_when_package_paths_missing() {
+    // Config has package_paths entries but none exist on disk.
+    let dir = TempDir::new().unwrap();
+    let cfg_path = dir.path().join("config.yaml");
+    fs::write(
+        &cfg_path,
+        "package_paths:\n  - /nonexistent/anvil-test/aaa\n  - /nonexistent/anvil-test/bbb\n",
+    )
+    .unwrap();
+
+    anvil(cfg_path.to_str().unwrap())
+        .args(["list"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("None of the configured package_paths exist"));
+}
+
+#[test]
+fn init_config_scaffolds_global_yaml() {
+    // anvil init --config writes ~/.anvil.yaml when none exists.
+    // We override HOME so the test never touches the real one.
+    let dir = TempDir::new().unwrap();
+    let fake_home = dir.path().join("home");
+    fs::create_dir_all(&fake_home).unwrap();
+
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("HOME", &fake_home)
+        .env("RUST_LOG", "anvil=error")
+        .env_remove("ANVIL_CONFIG")
+        .args(["init", "--config"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".anvil.yaml"));
+
+    let cfg = fake_home.join(".anvil.yaml");
+    assert!(cfg.exists());
+    let content = fs::read_to_string(&cfg).unwrap();
+    assert!(content.contains("package_paths:"));
+    assert!(content.contains("~/packages"));
+}
+
+#[test]
+fn init_config_refuses_overwrite() {
+    let dir = TempDir::new().unwrap();
+    let fake_home = dir.path().join("home");
+    fs::create_dir_all(&fake_home).unwrap();
+    fs::write(fake_home.join(".anvil.yaml"), "package_paths: []\n").unwrap();
+
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("HOME", &fake_home)
+        .env("RUST_LOG", "anvil=error")
+        .env_remove("ANVIL_CONFIG")
+        .args(["init", "--config"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn init_without_name_or_config_errors() {
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("anvil")
+        .unwrap()
+        .env("RUST_LOG", "anvil=error")
+        .current_dir(dir.path())
+        .args(["init"])
+        .assert()
+        .failure();
+}
+
+// ---- anvil info: multiple versions ----
+
+#[test]
+fn info_lists_other_versions_when_multiple_exist() {
+    // When several files share a name (`resolver-1.yaml`, `resolver-2.yaml`),
+    // `anvil info resolver` should call out all candidate versions instead
+    // of silently picking the highest.
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    fs::write(
+        pkg_dir.join("resolver-1.yaml"),
+        "name: resolver\nversion: \"1\"\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_dir.join("resolver-2.yaml"),
+        "name: resolver\nversion: \"2\"\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_dir.join("resolver-3.yaml"),
+        "name: resolver\nversion: \"3\"\n",
+    )
+    .unwrap();
+    let cfg_path = dir.path().join("config.yaml");
+    fs::write(
+        &cfg_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+
+    anvil(cfg_path.to_str().unwrap())
+        .args(["info", "resolver"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Available versions:"))
+        .stdout(predicate::str::contains("1"))
+        .stdout(predicate::str::contains("2"))
+        .stdout(predicate::str::contains("3"));
+}
+
+// ---- verbose flag ----
+
+#[test]
+fn default_log_level_is_quiet() {
+    // No RUST_LOG, no -v: info-level "Loaded N packages" should not appear.
+    let (_dir, cfg_str) = setup_env();
+    let mut cmd = Command::cargo_bin("anvil").unwrap();
+    cmd.env("ANVIL_CONFIG", &cfg_str);
+    cmd.env_remove("RUST_LOG");
+    cmd.args(["list"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Loaded").not());
+}
+
+#[test]
+fn verbose_flag_enables_info_logs() {
+    let (_dir, cfg_str) = setup_env();
+    let mut cmd = Command::cargo_bin("anvil").unwrap();
+    cmd.env("ANVIL_CONFIG", &cfg_str);
+    cmd.env_remove("RUST_LOG");
+    cmd.args(["-v", "list"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Loaded"));
+}
+
 // ---- anvil shell flags ----
 
 #[test]

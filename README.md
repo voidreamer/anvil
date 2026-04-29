@@ -15,9 +15,19 @@ cargo install anvil-env
 
 Or build from source with `cargo build --release` and use `target/release/anvil`.
 
+`cargo install` drops the binary in `~/.cargo/bin/anvil`. Add that directory to
+`PATH` so wrappers, hooks, and project scripts can call `anvil` directly
+instead of hard-coding the absolute path:
+
+```bash
+# bash / zsh
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
 ## Quick start
 
-Write a package at `~/packages/maya-2024.yaml`:
+Run `anvil init --config` to scaffold a starter `~/.anvil.yaml`, then write a
+package at `~/packages/maya-2024.yaml`:
 
 ```yaml
 name: maya
@@ -132,17 +142,30 @@ overwrite does not slip through.
 
 The `commands` map lets `anvil run` pick a program from the package definition.
 Values expand the same way as `environment` values, and can include baked in
-arguments with whitespace or tilde segments:
+arguments with whitespace or tilde segments — anvil tokenises the value with
+POSIX shell rules, expands `~/` in every token, then runs the first token
+with the remaining tokens prepended to whatever the user passes after `--`.
 
 ```yaml
 commands:
+  # Bare path
+  maya: ${MAYA_LOCATION}/bin/maya
+
+  # Program + baked-in flags (multi-token alias)
   nukex: ${NUKE_HOME}/Nuke${VERSION} --nukex
+
+  # Launcher in front of an interpreter (e.g. Python script with a specific runtime)
   usdview: python3.14 ~/USD/bin/usdview
+
+  # Wrapper that injects defaults; user's `-- <extra args>` are appended
+  hython-debug: ${HFS}/bin/hython -d -v
 ```
 
-Anvil tokenises the value with POSIX shell rules, expands `~/` in every token,
-then runs the first token with the remaining tokens prepended to whatever the
-user passes after `--`.
+`anvil run nukex -- --view` therefore exec's
+`${NUKE_HOME}/Nuke${VERSION} --nukex --view` — packages can ship sane defaults
+for every tool they expose without forcing users to memorise flag soup. Quoted
+substrings are preserved as a single argv element, so paths with spaces work
+without escaping the whole value.
 
 ## Commands
 
@@ -234,12 +257,13 @@ anvil context shell render.ctx.json
 
 ### `anvil init`
 
-Scaffold a new package definition.
+Scaffold a new package definition, or a starter global config.
 
 ```bash
 anvil init my-tools                     # my-tools/1.0.0/package.yaml
 anvil init my-tools --version 2.0       # my-tools/2.0/package.yaml
 anvil init my-tools --flat              # my-tools-1.0.0.yaml
+anvil init --config                     # ~/.anvil.yaml with a commented template
 ```
 
 ### `anvil completions`
@@ -363,7 +387,11 @@ filters:
 |---|---|
 | `ANVIL_CONFIG` | override config file location |
 | `ANVIL_PACKAGES` | additional package paths, colon separated |
-| `RUST_LOG` | log verbosity, e.g. `RUST_LOG=debug` |
+| `RUST_LOG` | log verbosity, e.g. `RUST_LOG=debug` (overrides `-v`) |
+
+By default anvil only logs warnings and errors so it can be piped safely
+(`eval "$(anvil env maya-2024 --export)"`). Pass `-v` for info-level diagnostics
+or `-vv` for debug.
 
 If no config file is found, anvil falls back to `$ANVIL_PACKAGES`,
 `$HOME/packages`, `$HOME/.local/share/anvil/packages`, and `/opt/packages`.

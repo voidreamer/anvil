@@ -189,6 +189,42 @@ impl Config {
         Ok(config)
     }
 
+    /// Diagnose why no packages were found and return a hint suitable for
+    /// printing to stderr.  Returns `None` when at least one package path
+    /// exists on disk (i.e. there's no obvious config problem to surface).
+    pub fn first_run_hint(&self) -> Option<String> {
+        let config_path = Self::config_path();
+        if !config_path.exists() {
+            return Some(format!(
+                "No anvil config found at {}.\n  - Run `anvil init --config` to scaffold one\n  - Or set ANVIL_PACKAGES to a colon-separated list of package directories",
+                config_path.display()
+            ));
+        }
+
+        if self.package_paths.is_empty() {
+            return Some(format!(
+                "{} sets no `package_paths`.\n  - Add e.g. `package_paths: [~/packages]` to point anvil at your packages\n  - Or set ANVIL_PACKAGES",
+                config_path.display()
+            ));
+        }
+
+        if self.all_package_paths().is_empty() {
+            let listed = self
+                .package_paths
+                .iter()
+                .map(|p| format!("    - {}", p))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Some(format!(
+                "None of the configured package_paths exist on disk:\n{}\n  Create one of them, or edit {}.",
+                listed,
+                config_path.display()
+            ));
+        }
+
+        None
+    }
+
     /// Get config file path
     pub fn config_path() -> PathBuf {
         if let Ok(path) = std::env::var("ANVIL_CONFIG") {
