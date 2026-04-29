@@ -1,4 +1,12 @@
 //! Package resolution and dependency management
+//!
+//! The resolver is depth-first and deterministic: package requests resolve in
+//! the order they're given, transitive dependencies before their parent, and
+//! the first version chosen for a name is the version that ships.  It does
+//! not backtrack on conflict — instead, every constraint encountered for a
+//! name is recorded against the chosen version, and a mismatch produces a
+//! diagnostic naming both sides ("X chose 1.0 because A required *, but B
+//! requires =2.0").
 
 use std::collections::HashMap;
 
@@ -8,7 +16,57 @@ use tracing::{debug, info, warn};
 use crate::cache;
 use crate::config::Config;
 use crate::context::Lockfile;
-use crate::package::{tokenize_command, Package, PackageRequest};
+use crate::package::{tokenize_command, Package, PackageRequest, VersionConstraint};
+
+/// One constraint asked for a package, plus who asked.
+#[derive(Debug, Clone)]
+struct Requester {
+    who: String,
+    constraint: VersionConstraint,
+}
+
+/// A package name that has already been picked.  The `requesters` list
+/// grows as more parts of the graph ask for the same name.
+#[derive(Debug)]
+struct ChosenPackage {
+    version: String,
+    requesters: Vec<Requester>,
+}
+
+/// Mutable state carried through depth-first resolution.
+#[derive(Debug, Default)]
+struct ResolveState {
+    /// Packages output in dependency order.
+    resolved: Vec<Package>,
+    /// Already-pushed package ids (`name-version`), for cycle short-circuit.
+    seen: std::collections::HashSet<String>,
+    /// Picked version per package name, plus every constraint seen for it.
+    chosen: HashMap<String, ChosenPackage>,
+}
+
+/// Build a conflict message that names the chosen version, every requester
+/// of that name (with their constraints), and pinpoints the failing one.
+fn format_conflict(name: &str, chosen: &ChosenPackage) -> String {
+    let mut msg = format!(
+        "version conflict for '{}': chose {} but a later request is incompatible\n",
+        name, chosen.version,
+    );
+    for r in &chosen.requesters {
+        let satisfied = if r.constraint.matches(&chosen.version) {
+            "ok"
+        } else {
+            "INCOMPATIBLE"
+        };
+        msg.push_str(&format!(
+            "  - {} required {}-{}  [{}]\n",
+            r.who, name, r.constraint, satisfied,
+        ));
+    }
+    msg.push_str(
+        "Resolve by relaxing one side, or pinning the other in anvil.lock.",
+    );
+    msg
+}
 
 /// Resolved set of packages
 #[derive(Debug)]
@@ -220,8 +278,7 @@ impl Resolver {
 
     /// Resolve a list of package requests
     pub fn resolve(&self, requests: &[String]) -> Result<ResolvedPackages> {
-        let mut resolved: Vec<Package> = Vec::new();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut state = ResolveState::default();
 
         // Expand aliases
         let mut expanded_requests: Vec<String> = Vec::new();
@@ -233,59 +290,105 @@ impl Resolver {
             }
         }
 
-        // Resolve each request
+        // Resolve each top-level request
         for req_str in &expanded_requests {
             let request = PackageRequest::parse(req_str)
                 .with_context(|| format!("Invalid package request: {}", req_str))?;
-
-            self.resolve_request(&request, &mut resolved, &mut seen)?;
+            self.resolve_request(&request, "<request>", &mut state)?;
         }
 
-        Ok(ResolvedPackages { packages: resolved })
+        Ok(ResolvedPackages {
+            packages: state.resolved,
+        })
     }
 
-    /// Resolve a single package request (with dependencies)
+    /// Resolve a single package request (with dependencies).
+    ///
+    /// `requester` is the id of the package that asked for this one
+    /// (or `"<request>"` for top-level requests / `"<lockfile>"` for pins).
+    /// It's used for conflict diagnostics — every constraint encountered for
+    /// a package name is attributed back to whoever asked for it.
     fn resolve_request(
         &self,
         request: &PackageRequest,
-        resolved: &mut Vec<Package>,
-        seen: &mut std::collections::HashSet<String>,
+        requester: &str,
+        state: &mut ResolveState,
     ) -> Result<()> {
-        let package = self.find_package(request)?;
-        let pkg_id = package.id();
-
-        if seen.contains(&pkg_id) {
+        // If this name has already been chosen, verify the new constraint
+        // is satisfied by the chosen version.  No backtracking — the first
+        // version wins, and incompatible later constraints become errors.
+        if let Some(existing) = state.chosen.get_mut(&request.name) {
+            existing.requesters.push(Requester {
+                who: requester.to_string(),
+                constraint: request.version_constraint.clone(),
+            });
+            if !request.matches(&existing.version) {
+                anyhow::bail!(format_conflict(&request.name, existing));
+            }
             return Ok(());
         }
 
-        // Resolve dependencies first
+        // Pick a version.
+        let package = self.find_package(request, requester)?;
+        let pkg_id = package.id();
+
+        // Record the choice before recursing into deps, so a cycle
+        // (A requires B requires A) terminates instead of looping.
+        state.chosen.insert(
+            request.name.clone(),
+            ChosenPackage {
+                version: package.version.clone(),
+                requesters: vec![Requester {
+                    who: requester.to_string(),
+                    constraint: request.version_constraint.clone(),
+                }],
+            },
+        );
+
+        if state.seen.contains(&pkg_id) {
+            return Ok(());
+        }
+        state.seen.insert(pkg_id.clone());
+
+        // Resolve dependencies first so parents land after their deps.
         for dep_str in &package.requires {
             let dep_request = PackageRequest::parse(dep_str)
-                .with_context(|| format!("Invalid dependency: {}", dep_str))?;
-            self.resolve_request(&dep_request, resolved, seen)?;
+                .with_context(|| format!("Invalid dependency in {}: {}", pkg_id, dep_str))?;
+            self.resolve_request(&dep_request, &pkg_id, state)?;
         }
 
-        seen.insert(pkg_id);
-        resolved.push(package);
-
+        state.resolved.push(package);
         Ok(())
     }
 
     /// Find a package matching a request, preferring a pinned version.
-    fn find_package(&self, request: &PackageRequest) -> Result<Package> {
-        let versions = self.package_cache.get(&request.name)
-            .ok_or_else(|| anyhow::anyhow!("Package not found: {}", request.name))?;
+    fn find_package(&self, request: &PackageRequest, requester: &str) -> Result<Package> {
+        let Some(versions) = self.package_cache.get(&request.name) else {
+            anyhow::bail!(
+                "Package not found: '{}' (required by {})",
+                request.name,
+                requester,
+            );
+        };
 
-        // Lockfile pin takes priority
+        // Lockfile pin takes priority — but only if it satisfies the
+        // request's constraint, otherwise we'd silently break the request.
         if let Some(pinned) = self.pins.get(&request.name) {
             if let Some(pkg) = versions.get(pinned) {
-                debug!("Using pinned version: {}-{}", request.name, pinned);
-                return Ok(pkg.clone());
+                if request.matches(&pkg.version) {
+                    debug!("Using pinned version: {}-{}", request.name, pinned);
+                    return Ok(pkg.clone());
+                }
+                warn!(
+                    "Pinned version {}-{} does not satisfy {} (required by {}); resolving normally",
+                    request.name, pinned, request, requester,
+                );
+            } else {
+                warn!(
+                    "Pinned version {}-{} not found; resolving normally",
+                    request.name, pinned,
+                );
             }
-            warn!(
-                "Pinned version {}-{} not found, resolving normally",
-                request.name, pinned
-            );
         }
 
         let mut matching: Vec<&Package> = versions
@@ -294,10 +397,22 @@ impl Resolver {
             .collect();
 
         if matching.is_empty() {
+            let mut available: Vec<&String> = versions.keys().collect();
+            available.sort();
+            let constraint_note = match &request.version_constraint {
+                VersionConstraint::Any => String::new(),
+                c => format!(" matching '{}'", c),
+            };
             anyhow::bail!(
-                "No matching version for {}: available versions are {:?}",
+                "No version of '{}'{} (required by {}). Available: [{}]",
                 request.name,
-                versions.keys().collect::<Vec<_>>()
+                constraint_note,
+                requester,
+                available
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
             );
         }
 
@@ -335,7 +450,7 @@ impl Resolver {
     /// Get a specific package
     pub fn get_package(&self, id: &str) -> Result<Package> {
         let request = PackageRequest::parse(id)?;
-        self.find_package(&request)
+        self.find_package(&request, "<lookup>")
     }
 
     /// Validate a package definition.  Returns `Err` for fatal problems
@@ -343,11 +458,11 @@ impl Resolver {
     /// non-fatal command-target issues (caller decides how to surface them).
     pub fn validate_package_report(&self, id: &str) -> Result<Vec<String>> {
         let request = PackageRequest::parse(id)?;
-        let package = self.find_package(&request)?;
+        let package = self.find_package(&request, "<validate>")?;
 
         for dep_str in &package.requires {
             let dep_request = PackageRequest::parse(dep_str)?;
-            self.find_package(&dep_request)
+            self.find_package(&dep_request, &package.id())
                 .with_context(|| format!("Missing dependency: {}", dep_str))?;
         }
 

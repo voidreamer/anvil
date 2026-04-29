@@ -1055,3 +1055,95 @@ fn shell_help_exposes_shim_flags() {
         .stdout(predicate::str::contains("--env-only"))
         .stdout(predicate::str::contains("--no-sweep"));
 }
+
+// ---- resolver conflict diagnostics ----
+
+/// Set up a temp dir with two python versions and two packages that pin
+/// incompatible pythons.  Returns (TempDir, config_path).
+fn setup_conflicting_pythons() -> (TempDir, String) {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    for v in ["3.10", "3.11"] {
+        let d = pkg_dir.join(format!("python/{}", v));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("package.yaml"),
+            format!("name: python\nversion: \"{}\"\n", v),
+        )
+        .unwrap();
+    }
+
+    fs::write(
+        pkg_dir.join("alpha-1.0.yaml"),
+        "name: alpha\nversion: \"1.0\"\nrequires:\n  - python-3.10\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_dir.join("beta-1.0.yaml"),
+        "name: beta\nversion: \"1.0\"\nrequires:\n  - python-3.11\n",
+    )
+    .unwrap();
+
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    (dir, config_path.to_string_lossy().to_string())
+}
+
+#[test]
+fn conflict_lists_both_requesters_and_constraints() {
+    let (_dir, cfg) = setup_conflicting_pythons();
+    anvil(&cfg)
+        .args(["env", "alpha-1.0", "beta-1.0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("version conflict for 'python'"))
+        .stderr(predicate::str::contains("alpha-1.0 required python-3.10"))
+        .stderr(predicate::str::contains("beta-1.0 required python-3.11"))
+        .stderr(predicate::str::contains("INCOMPATIBLE"));
+}
+
+#[test]
+fn missing_version_names_the_requester() {
+    let (_dir, cfg) = setup_conflicting_pythons();
+    // Ask for a python version that doesn't exist; the error should
+    // attribute the failing constraint to the top-level request.
+    anvil(&cfg)
+        .args(["env", "python-3.99"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No version of 'python'"))
+        .stderr(predicate::str::contains("required by <request>"))
+        .stderr(predicate::str::contains("3.10"))
+        .stderr(predicate::str::contains("3.11"));
+}
+
+#[test]
+fn missing_dep_names_the_parent_package() {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    // alpha requires a package that doesn't exist anywhere.
+    fs::write(
+        pkg_dir.join("alpha-1.0.yaml"),
+        "name: alpha\nversion: \"1.0\"\nrequires:\n  - missing-pkg-1.0\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    anvil(&config_path.to_string_lossy())
+        .args(["env", "alpha-1.0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Package not found: 'missing-pkg'"))
+        .stderr(predicate::str::contains("required by alpha-1.0"));
+}

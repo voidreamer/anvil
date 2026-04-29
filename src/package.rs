@@ -233,6 +233,24 @@ pub enum VersionConstraint {
     Any,
 }
 
+impl VersionConstraint {
+    /// Check if a version satisfies this constraint.
+    pub fn matches(&self, version: &str) -> bool {
+        match self {
+            VersionConstraint::Exact(v) => version == v,
+            VersionConstraint::Minimum(min) => {
+                version_compare(version, min) >= std::cmp::Ordering::Equal
+            }
+            VersionConstraint::Range(min, max) => {
+                version_compare(version, min) >= std::cmp::Ordering::Equal
+                    && version_compare(version, max) <= std::cmp::Ordering::Equal
+            }
+            VersionConstraint::OneOf(versions) => versions.contains(&version.to_string()),
+            VersionConstraint::Any => true,
+        }
+    }
+}
+
 impl PackageRequest {
     /// Parse a package request string.
     ///
@@ -286,19 +304,29 @@ impl PackageRequest {
         })
     }
     
-    /// Check if a version matches this constraint
+    /// Check if a version matches this request's constraint.
     pub fn matches(&self, version: &str) -> bool {
+        self.version_constraint.matches(version)
+    }
+}
+
+impl std::fmt::Display for VersionConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VersionConstraint::Exact(v) => write!(f, "{}", v),
+            VersionConstraint::Minimum(v) => write!(f, "{}+", v),
+            VersionConstraint::Range(a, b) => write!(f, "{}..{}", a, b),
+            VersionConstraint::OneOf(vs) => write!(f, "{}", vs.join("|")),
+            VersionConstraint::Any => write!(f, "*"),
+        }
+    }
+}
+
+impl std::fmt::Display for PackageRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.version_constraint {
-            VersionConstraint::Exact(v) => version == v,
-            VersionConstraint::Minimum(min) => {
-                version_compare(version, min) >= std::cmp::Ordering::Equal
-            }
-            VersionConstraint::Range(min, max) => {
-                version_compare(version, min) >= std::cmp::Ordering::Equal
-                    && version_compare(version, max) <= std::cmp::Ordering::Equal
-            }
-            VersionConstraint::OneOf(versions) => versions.contains(&version.to_string()),
-            VersionConstraint::Any => true,
+            VersionConstraint::Any => write!(f, "{}", self.name),
+            c => write!(f, "{}-{}", self.name, c),
         }
     }
 }
