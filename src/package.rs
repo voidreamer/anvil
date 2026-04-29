@@ -7,6 +7,18 @@ use anyhow::{Context, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+/// Platform-native path-list separator, exposed in yaml as `${PATHSEP}`.
+#[cfg(target_os = "windows")]
+pub const PATHSEP: &str = ";";
+#[cfg(not(target_os = "windows"))]
+pub const PATHSEP: &str = ":";
+
+/// Platform-native executable suffix, exposed in yaml as `${EXE_SUFFIX}`.
+#[cfg(target_os = "windows")]
+pub const EXE_SUFFIX: &str = ".exe";
+#[cfg(not(target_os = "windows"))]
+pub const EXE_SUFFIX: &str = "";
+
 /// A package definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
@@ -133,6 +145,11 @@ impl Package {
         // Replace ${NAME} with package name
         result = result.replace("${NAME}", &self.name);
 
+        // Platform-aware builtins so a single yaml line can compose path
+        // lists or binary names without a `variants:` fork per platform.
+        result = result.replace("${PATHSEP}", PATHSEP);
+        result = result.replace("${EXE_SUFFIX}", EXE_SUFFIX);
+
         // Replace other ${VAR} references
         for (key, val) in env {
             result = result.replace(&format!("${{{}}}", key), val);
@@ -145,11 +162,19 @@ impl Package {
             std::env::var(var).unwrap_or_default()
         }).to_string();
 
-        // Expand ~ to home directory
-        if result.starts_with("~/") {
-            if let Ok(home) = std::env::var("HOME") {
-                result = format!("{}{}", home, &result[1..]);
-            }
+        // Expand `~/` everywhere it appears at a segment boundary
+        // (start-of-value, or after `:` / `;`).  Path-list values like
+        // `~/USD/bin;~/USD/lib` need every occurrence expanded, not just
+        // the first.  `dirs::home_dir()` resolves via `USERPROFILE` on
+        // Windows when `HOME` is unset (PowerShell sessions).
+        if let Some(home) = dirs::home_dir() {
+            let home_str = home.to_string_lossy();
+            let tilde_re = regex::Regex::new(r"(^|[:;])~/").unwrap();
+            result = tilde_re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    format!("{}{}/", &caps[1], home_str)
+                })
+                .to_string();
         }
 
         result
@@ -451,6 +476,108 @@ mod tests {
         };
         let env = HashMap::new();
         assert_eq!(pkg.expand_env_value("${NAME}-${VERSION}", &env), "maya-2024");
+    }
+
+    #[test]
+    fn expand_pathsep_builtin() {
+        let pkg = Package {
+            name: "test".into(),
+            version: "1.0".into(),
+            description: None,
+            requires: vec![],
+            environment: IndexMap::new(),
+            commands: HashMap::new(),
+            variants: vec![],
+            root: PathBuf::from("/tmp"),
+        };
+        let env = HashMap::new();
+        let expected = if cfg!(target_os = "windows") {
+            "/a;/b;/c"
+        } else {
+            "/a:/b:/c"
+        };
+        assert_eq!(
+            pkg.expand_env_value("/a${PATHSEP}/b${PATHSEP}/c", &env),
+            expected
+        );
+    }
+
+    #[test]
+    fn expand_exe_suffix_builtin() {
+        let pkg = Package {
+            name: "test".into(),
+            version: "1.0".into(),
+            description: None,
+            requires: vec![],
+            environment: IndexMap::new(),
+            commands: HashMap::new(),
+            variants: vec![],
+            root: PathBuf::from("/tmp"),
+        };
+        let env = HashMap::new();
+        let expected = if cfg!(target_os = "windows") {
+            "blender.exe"
+        } else {
+            "blender"
+        };
+        assert_eq!(pkg.expand_env_value("blender${EXE_SUFFIX}", &env), expected);
+    }
+
+    #[test]
+    fn expand_tilde_at_every_segment() {
+        // `~` should expand at the start of every path segment, not just the
+        // first occurrence in the value.  Path-list values like
+        // `~/USD/bin;~/USD/lib` were leaving the second `~` literal before.
+        let pkg = Package {
+            name: "test".into(),
+            version: "1.0".into(),
+            description: None,
+            requires: vec![],
+            environment: IndexMap::new(),
+            commands: HashMap::new(),
+            variants: vec![],
+            root: PathBuf::from("/tmp"),
+        };
+        let env = HashMap::new();
+        let home = dirs::home_dir().expect("test needs a HOME");
+        let home_str = home.to_string_lossy();
+
+        // Unix-style separator
+        let unix_in = "~/a:~/b:~/c";
+        let unix_out = pkg.expand_env_value(unix_in, &env);
+        assert_eq!(
+            unix_out,
+            format!("{h}/a:{h}/b:{h}/c", h = home_str),
+            "Unix-style path list should expand every ~"
+        );
+
+        // Windows-style separator
+        let win_in = "~/a;~/b;~/c";
+        let win_out = pkg.expand_env_value(win_in, &env);
+        assert_eq!(
+            win_out,
+            format!("{h}/a;{h}/b;{h}/c", h = home_str),
+            "Windows-style path list should expand every ~"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_only_at_segment_boundary() {
+        // A `~` that's not at a segment boundary (e.g. embedded in a word)
+        // should be left alone.
+        let pkg = Package {
+            name: "test".into(),
+            version: "1.0".into(),
+            description: None,
+            requires: vec![],
+            environment: IndexMap::new(),
+            commands: HashMap::new(),
+            variants: vec![],
+            root: PathBuf::from("/tmp"),
+        };
+        let env = HashMap::new();
+        // No `~/` at start or after `:` / `;`, so nothing should change.
+        assert_eq!(pkg.expand_env_value("backup~/file", &env), "backup~/file");
     }
 
     #[test]
