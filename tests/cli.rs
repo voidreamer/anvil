@@ -1206,6 +1206,106 @@ fn drift_warning_when_package_changes_after_lock() {
         .stderr(predicate::str::contains("widget-1.0"));
 }
 
+// ---- anvil sync ----
+
+#[test]
+fn sync_succeeds_when_pinned_packages_are_present() {
+    // The test fixture's command targets point to placeholder paths
+    // that don't exist on disk, so sync prints warnings -- but as
+    // long as the pinned package definitions resolve and their
+    // content hashes match, sync should still exit 0.
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("maya-2024"))
+        .stdout(predicate::str::contains("python-3.11"))
+        .stdout(predicate::str::contains("0 failure(s)"));
+}
+
+#[test]
+fn sync_fails_when_pinned_version_missing() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    // Hand-edit the lock to a version that doesn't exist on disk.
+    let lock_path = dir.path().join("anvil.lock");
+    let original = fs::read_to_string(&lock_path).unwrap();
+    fs::write(&lock_path, original.replace("version: '2024'", "version: '1999'")).unwrap();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["sync"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("fail  maya-1999"))
+        .stderr(predicate::str::contains("anvil sync"));
+}
+
+#[test]
+fn sync_warns_on_hash_drift() {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    let pkg_path = pkg_dir.join("widget-1.0.yaml");
+    fs::write(
+        &pkg_path,
+        "name: widget\nversion: \"1.0\"\nenvironment:\n  WIDGET: original\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    let cfg = config_path.to_string_lossy().to_string();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "widget-1.0"])
+        .assert()
+        .success();
+
+    fs::write(
+        &pkg_path,
+        "name: widget\nversion: \"1.0\"\nenvironment:\n  WIDGET: tampered\n",
+    )
+    .unwrap();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["sync", "--refresh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("warn  widget-1.0"))
+        .stdout(predicate::str::contains("content hash drift"))
+        .stdout(predicate::str::contains("1 warning(s)"));
+}
+
+#[test]
+fn sync_fails_without_a_lockfile() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["sync"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no anvil.lock"));
+}
+
 // ---- --locked / --frozen ----
 
 #[test]

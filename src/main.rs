@@ -113,6 +113,9 @@ fn main() -> Result<()> {
         Commands::Wrap { packages, dir, shell } => {
             cmd_wrap(&config, &packages, &dir, &shell, refresh, frozen)?;
         }
+        Commands::Sync => {
+            cmd_sync(&config, refresh)?;
+        }
         Commands::Publish { target, path, flat } => {
             cmd_publish(&target, path.as_deref(), flat)?;
         }
@@ -449,6 +452,101 @@ fn cmd_validate(
         );
     } else {
         println!("\nAll packages valid!");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Sync
+// ---------------------------------------------------------------------------
+
+/// Verify every pin in anvil.lock against the package paths on disk.
+/// Walks pins (current-platform overlay applied), and for each:
+///   - confirms the pinned name+version exists on disk
+///   - compares content hashes (if recorded) and reports drift
+///   - validates command-alias targets resolve to executables
+/// Returns non-zero on any failure; warnings (hash drift, broken
+/// command targets) print but don't change the exit code.
+fn cmd_sync(config: &Config, refresh: bool) -> Result<()> {
+    let lock_path = Lockfile::find()
+        .ok_or_else(|| anyhow::anyhow!("anvil sync: no anvil.lock found in this directory or any parent"))?;
+    let lockfile = Lockfile::load(&lock_path)?;
+    let current = package::Package::current_platform();
+    let pins = lockfile.effective_pins(current);
+
+    let resolver = Resolver::new_unlocked(config, refresh)?;
+
+    let platform_label = current.unwrap_or("unknown");
+    println!("Checking {} for {}: {} pin(s)", lock_path.display(), platform_label, pins.len());
+
+    let mut ok = 0usize;
+    let mut warnings = 0usize;
+    let mut failures = 0usize;
+    let mut names: Vec<&String> = pins.keys().collect();
+    names.sort();
+
+    for name in names {
+        let pin = &pins[name];
+        let id = format!("{}-{}", name, pin.version);
+
+        // Existence check.
+        let pkg = match resolver.get_package(&id) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("  fail  {} -- {}", id, e);
+                failures += 1;
+                continue;
+            }
+        };
+
+        // Content hash drift.
+        if let Some(expected) = &pin.content_hash {
+            match pkg.content_hash() {
+                Some(actual) if &actual != expected => {
+                    println!(
+                        "  warn  {} -- content hash drift (locked {}, on-disk {})",
+                        id,
+                        &expected[..12.min(expected.len())],
+                        &actual[..12.min(actual.len())],
+                    );
+                    warnings += 1;
+                    continue;
+                }
+                None => {
+                    println!("  warn  {} -- pinned hash present but file unreadable", id);
+                    warnings += 1;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        // Validate command targets.
+        match resolver.validate_package_report(&id) {
+            Ok(problems) if !problems.is_empty() => {
+                println!("  warn  {} -- {} command issue(s):", id, problems.len());
+                for p in &problems {
+                    println!("          {}", p);
+                }
+                warnings += 1;
+            }
+            Ok(_) => {
+                println!("  ok    {}", id);
+                ok += 1;
+            }
+            Err(e) => {
+                println!("  fail  {} -- {}", id, e);
+                failures += 1;
+            }
+        }
+    }
+
+    println!(
+        "{} ok, {} warning(s), {} failure(s)",
+        ok, warnings, failures,
+    );
+    if failures > 0 {
+        anyhow::bail!("anvil sync: {} pin(s) failed verification", failures);
     }
     Ok(())
 }

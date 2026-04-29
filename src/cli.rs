@@ -134,6 +134,12 @@ pub enum Commands {
         action: ContextAction,
     },
 
+    /// Verify that every pin in anvil.lock is reachable, hash-matching,
+    /// and that each pinned package's commands resolve to existing
+    /// executables.  Read-only; useful before farm jobs that must not
+    /// fail mid-run on a missing alias.
+    Sync,
+
     /// Scaffold a new package definition (or `--config` for the global config)
     Init {
         /// Package name (e.g., my-tools). Omit when using `--config`.
