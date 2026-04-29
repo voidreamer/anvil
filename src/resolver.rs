@@ -141,18 +141,36 @@ pub struct Resolver {
     /// Pins from a lockfile (empty when unlocked).  Carries version
     /// plus optional content hash for drift detection.
     pins: HashMap<String, Pin>,
+    /// Reject any resolution lookup whose name is not in `pins`.
+    /// Set by `--frozen` so commands can never silently fall back to
+    /// fresh resolution.
+    frozen: bool,
 }
 
 impl Resolver {
     /// Create a new resolver, automatically loading `anvil.lock` if present.
     /// When `refresh` is true, the package scan cache is bypassed.
     pub fn new(config: &Config, refresh: bool) -> Result<Self> {
+        Self::with_options(config, refresh, false)
+    }
+
+    /// Like `new`, but rejects any lookup whose name is not pinned
+    /// (the `--frozen` semantics).  A lockfile is required.
+    pub fn new_frozen(config: &Config, refresh: bool) -> Result<Self> {
+        Self::with_options(config, refresh, true)
+    }
+
+    fn with_options(config: &Config, refresh: bool, frozen: bool) -> Result<Self> {
         let pins = if let Some(lock_path) = Lockfile::find() {
             let lockfile = Lockfile::load(&lock_path)?;
             info!("Using lockfile: {:?}", lock_path);
             // Overlay per-platform pins so a single lockfile resolved
             // for multiple platforms picks the right entry on each.
             lockfile.effective_pins(Package::current_platform())
+        } else if frozen {
+            anyhow::bail!(
+                "--frozen requires anvil.lock, but none was found in this directory or any parent"
+            );
         } else {
             HashMap::new()
         };
@@ -161,6 +179,7 @@ impl Resolver {
             config: config.clone(),
             package_cache: HashMap::new(),
             pins,
+            frozen,
         };
         resolver.load_packages(refresh)?;
         resolver.verify_pin_hashes();
@@ -173,6 +192,7 @@ impl Resolver {
             config: config.clone(),
             package_cache: HashMap::new(),
             pins: HashMap::new(),
+            frozen: false,
         };
         resolver.load_packages(refresh)?;
         Ok(resolver)
@@ -422,6 +442,16 @@ impl Resolver {
 
     /// Find a package matching a request, preferring a pinned version.
     fn find_package(&self, request: &PackageRequest, requester: &str) -> Result<Package> {
+        // Frozen mode: every name we touch must already be pinned.
+        if self.frozen && !self.pins.contains_key(&request.name) {
+            anyhow::bail!(
+                "--frozen: '{}' (required by {}) is not pinned in anvil.lock; \
+                 add it to the locked request set or drop --frozen",
+                request.name,
+                requester,
+            );
+        }
+
         let Some(versions) = self.package_cache.get(&request.name) else {
             anyhow::bail!(
                 "Package not found: '{}' (required by {})",

@@ -46,16 +46,24 @@ fn main() -> Result<()> {
     // Load config
     let config = Config::load()?;
     let refresh = cli.refresh;
+    let frozen = cli.frozen;
+
+    // --locked: re-resolve the locked request set fresh and diff
+    // against the pins on disk before running any command.  Any drift
+    // fails the run.
+    if cli.locked {
+        verify_lockfile_fresh(&config, refresh)?;
+    }
 
     match cli.command {
         Commands::Env { packages, export, json } => {
-            cmd_env(&config, &packages, export, json, refresh)?;
+            cmd_env(&config, &packages, export, json, refresh, frozen)?;
         }
         Commands::Run { packages, env_vars, command } => {
-            cmd_run(&config, &packages, &env_vars, &command, refresh)?;
+            cmd_run(&config, &packages, &env_vars, &command, refresh, frozen)?;
         }
         Commands::Shell { packages, shell, env_only, no_sweep } => {
-            cmd_shell(&config, &packages, shell, refresh, env_only, no_sweep)?;
+            cmd_shell(&config, &packages, shell, refresh, env_only, no_sweep, frozen)?;
         }
         Commands::List { package } => {
             cmd_list(&config, package, refresh)?;
@@ -75,7 +83,7 @@ fn main() -> Result<()> {
         }
         Commands::Context { action } => match action {
             ContextAction::Save { packages, output } => {
-                cmd_context_save(&config, &packages, &output, refresh)?;
+                cmd_context_save(&config, &packages, &output, refresh, frozen)?;
             }
             ContextAction::Show { file, json, export } => {
                 cmd_context_show(&file, json, export)?;
@@ -103,13 +111,59 @@ fn main() -> Result<()> {
             Cli::print_completions(shell);
         }
         Commands::Wrap { packages, dir, shell } => {
-            cmd_wrap(&config, &packages, &dir, &shell, refresh)?;
+            cmd_wrap(&config, &packages, &dir, &shell, refresh, frozen)?;
         }
         Commands::Publish { target, path, flat } => {
             cmd_publish(&target, path.as_deref(), flat)?;
         }
     }
 
+    Ok(())
+}
+
+/// Helper: build a Resolver honouring the `--frozen` flag.
+fn build_resolver(config: &Config, refresh: bool, frozen: bool) -> Result<Resolver> {
+    if frozen {
+        Resolver::new_frozen(config, refresh)
+    } else {
+        Resolver::new(config, refresh)
+    }
+}
+
+/// Verify that anvil.lock matches a fresh resolution of its own
+/// recorded request set.  Any drift -- different version, different
+/// content hash, missing or extra package -- aborts with a diff.
+/// Called from `main` when `--locked` is set.
+fn verify_lockfile_fresh(config: &Config, refresh: bool) -> Result<()> {
+    let lock_path = Lockfile::find()
+        .ok_or_else(|| anyhow::anyhow!("--locked: no anvil.lock found in this directory or any parent"))?;
+    let lockfile = Lockfile::load(&lock_path)?;
+    let current = package::Package::current_platform();
+    let expected = lockfile.effective_pins(current);
+
+    // Resolve fresh against the same request set.
+    let resolver = Resolver::new_unlocked(config, refresh)?;
+    let resolved = resolver.resolve(&lockfile.requests)?;
+    let mut actual = std::collections::HashMap::new();
+    for pkg in resolved.packages() {
+        actual.insert(
+            pkg.name.clone(),
+            Pin {
+                version: pkg.version.clone(),
+                content_hash: pkg.content_hash(),
+            },
+        );
+    }
+
+    let diffs = Lockfile::diff_pins(&expected, &actual);
+    if !diffs.is_empty() {
+        let mut msg = String::from("--locked: anvil.lock is stale\n");
+        for d in &diffs {
+            msg.push_str(&format!("  - {}\n", d));
+        }
+        msg.push_str("Re-run `anvil lock` to refresh.");
+        anyhow::bail!(msg);
+    }
     Ok(())
 }
 
@@ -120,8 +174,9 @@ fn cmd_env(
     export: bool,
     json: bool,
     refresh: bool,
+    frozen: bool,
 ) -> Result<()> {
-    let resolver = Resolver::new(config, refresh)?;
+    let resolver = build_resolver(config, refresh, frozen)?;
     let resolved = resolver.resolve(packages)?;
     let env = resolved.environment();
 
@@ -147,13 +202,14 @@ fn cmd_run(
     env_vars: &[String],
     command: &[String],
     refresh: bool,
+    frozen: bool,
 ) -> Result<()> {
     use std::process::Command;
 
     // Pre-resolve hooks
     Config::run_hooks(&config.hooks.pre_resolve, &std::env::vars().collect())?;
 
-    let resolver = Resolver::new(config, refresh)?;
+    let resolver = build_resolver(config, refresh, frozen)?;
     let resolved = resolver.resolve(packages)?;
     let mut env = resolved.environment();
 
@@ -218,8 +274,9 @@ fn cmd_shell(
     refresh: bool,
     env_only: bool,
     no_sweep: bool,
+    frozen: bool,
 ) -> Result<()> {
-    let resolver = Resolver::new(config, refresh)?;
+    let resolver = build_resolver(config, refresh, frozen)?;
     let resolved = resolver.resolve(packages)?;
     let mut env = resolved.environment();
 
@@ -520,8 +577,9 @@ fn cmd_context_save(
     packages: &[String],
     output: &str,
     refresh: bool,
+    frozen: bool,
 ) -> Result<()> {
-    let resolver = Resolver::new(config, refresh)?;
+    let resolver = build_resolver(config, refresh, frozen)?;
     let resolved = resolver.resolve(packages)?;
     let env = resolved.environment();
 
@@ -717,8 +775,9 @@ fn cmd_wrap(
     dir: &str,
     wrapper_shell: &str,
     refresh: bool,
+    frozen: bool,
 ) -> Result<()> {
-    let resolver = Resolver::new(config, refresh)?;
+    let resolver = build_resolver(config, refresh, frozen)?;
     let resolved = resolver.resolve(packages)?;
     let commands = resolved.commands();
 

@@ -17,6 +17,21 @@ pub struct Cli {
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
 
+    /// Verify that anvil.lock is up to date.  Re-resolves the locked
+    /// request set fresh and compares against the pins on disk; any
+    /// drift (different version, different content hash, missing or
+    /// extra package) fails the command.  Useful in CI.
+    #[arg(long, global = true, conflicts_with = "frozen")]
+    pub locked: bool,
+
+    /// Use anvil.lock verbatim and never fall back to fresh
+    /// resolution.  Any package the resolver would otherwise pick
+    /// from the package paths must already be pinned, otherwise the
+    /// command fails.  Useful for render farms and other non-mutating
+    /// runs that must never silently drift.
+    #[arg(long, global = true, conflicts_with = "locked")]
+    pub frozen: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }

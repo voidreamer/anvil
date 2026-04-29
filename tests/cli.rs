@@ -1206,6 +1206,107 @@ fn drift_warning_when_package_changes_after_lock() {
         .stderr(predicate::str::contains("widget-1.0"));
 }
 
+// ---- --locked / --frozen ----
+
+#[test]
+fn locked_passes_when_lockfile_matches_disk() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--locked", "env", "maya-2024"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MAYA_VERSION=2024"));
+}
+
+#[test]
+fn locked_fails_when_lockfile_is_stale() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    // Hand-edit the lock to a version that doesn't exist on disk.
+    let lock_path = dir.path().join("anvil.lock");
+    let original = fs::read_to_string(&lock_path).unwrap();
+    let stale = original.replace("version: '2024'", "version: '1999'");
+    fs::write(&lock_path, &stale).unwrap();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--locked", "env", "maya-2024"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--locked: anvil.lock is stale"));
+}
+
+#[test]
+fn locked_fails_without_a_lockfile() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--locked", "env", "maya-2024"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--locked: no anvil.lock"));
+}
+
+#[test]
+fn frozen_uses_lockfile_only() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--frozen", "env", "maya-2024"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MAYA_VERSION=2024"));
+}
+
+#[test]
+fn frozen_fails_for_unpinned_package() {
+    let (dir, cfg) = setup_env();
+    // Lock only maya — python is a transitive dep that *will* be pinned.
+    // Then ask for studio-blender-tools which was never resolved/pinned.
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "maya-2024"])
+        .assert()
+        .success();
+
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--frozen", "env", "studio-blender-tools-1.0.0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--frozen"))
+        .stderr(predicate::str::contains("studio-blender-tools"));
+}
+
+#[test]
+fn frozen_without_lockfile_fails() {
+    let (dir, cfg) = setup_env();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["--frozen", "env", "maya-2024"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--frozen requires anvil.lock"));
+}
+
 // ---- cross-platform lockfile ----
 
 /// Set up a temp dir with a package whose `variants:` block adds a

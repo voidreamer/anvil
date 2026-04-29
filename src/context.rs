@@ -116,6 +116,37 @@ impl Lockfile {
             .with_context(|| format!("Failed to write lockfile: {:?}", path))
     }
 
+    /// Compare two pin maps and return a list of human-readable
+    /// differences.  An empty Vec means they agree; otherwise each
+    /// entry is one drift line ("python: 3.10 -> 3.11" etc.).
+    pub fn diff_pins(expected: &HashMap<String, Pin>, actual: &HashMap<String, Pin>) -> Vec<String> {
+        let mut diffs = Vec::new();
+        for (name, want) in expected {
+            match actual.get(name) {
+                None => diffs.push(format!("{}: pinned {} but not produced by fresh resolve", name, want.version)),
+                Some(got) if got.version != want.version => diffs
+                    .push(format!("{}: pinned {} but fresh resolve picks {}", name, want.version, got.version)),
+                Some(got) if want.content_hash.is_some()
+                    && got.content_hash.is_some()
+                    && got.content_hash != want.content_hash =>
+                {
+                    diffs.push(format!(
+                        "{}-{}: content hash differs (lockfile vs disk)",
+                        name, want.version
+                    ))
+                }
+                _ => {}
+            }
+        }
+        for (name, got) in actual {
+            if !expected.contains_key(name) {
+                diffs.push(format!("{}: fresh resolve adds {} (not in lockfile)", name, got.version));
+            }
+        }
+        diffs.sort();
+        diffs
+    }
+
     /// Search for `anvil.lock` starting from CWD and walking upward.
     pub fn find() -> Option<PathBuf> {
         let mut dir = std::env::current_dir().ok()?;
