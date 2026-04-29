@@ -1206,6 +1206,58 @@ fn drift_warning_when_package_changes_after_lock() {
         .stderr(predicate::str::contains("widget-1.0"));
 }
 
+// ---- anvil tree ----
+
+#[test]
+fn tree_renders_dependency_graph_with_connectors() {
+    // Build a tree: app -> [foo, bar]; foo -> shared; bar -> shared.
+    // The second occurrence of `shared` should be marked `(*)` so
+    // the diamond doesn't print twice.
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    fs::write(
+        pkg_dir.join("shared-1.0.yaml"),
+        "name: shared\nversion: \"1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_dir.join("foo-1.0.yaml"),
+        "name: foo\nversion: \"1.0\"\nrequires:\n  - shared-1.0\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_dir.join("bar-1.0.yaml"),
+        "name: bar\nversion: \"1.0\"\nrequires:\n  - shared-1.0\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_dir.join("app-1.0.yaml"),
+        "name: app\nversion: \"1.0\"\nrequires:\n  - foo-1.0\n  - bar-1.0\n",
+    )
+    .unwrap();
+
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+
+    let assert = anvil(&config_path.to_string_lossy())
+        .args(["tree", "app-1.0"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+
+    assert!(stdout.starts_with("app-1.0"), "should print root first:\n{}", stdout);
+    assert!(stdout.contains("├── foo-1.0"), "non-last child uses ├──:\n{}", stdout);
+    assert!(stdout.contains("└── bar-1.0"), "last child uses └──:\n{}", stdout);
+    assert!(stdout.contains("shared-1.0"), "shared dep should appear:\n{}", stdout);
+    assert!(stdout.contains("(*)"), "repeat marker for diamond dep:\n{}", stdout);
+}
+
 // ---- anvil sync ----
 
 #[test]

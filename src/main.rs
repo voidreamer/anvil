@@ -116,6 +116,9 @@ fn main() -> Result<()> {
         Commands::Sync => {
             cmd_sync(&config, refresh)?;
         }
+        Commands::Tree { packages } => {
+            cmd_tree(&config, &packages, refresh, frozen)?;
+        }
         Commands::Publish { target, path, flat } => {
             cmd_publish(&target, path.as_deref(), flat)?;
         }
@@ -454,6 +457,96 @@ fn cmd_validate(
         println!("\nAll packages valid!");
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tree
+// ---------------------------------------------------------------------------
+
+/// Print the resolved dependency graph as an ASCII tree.  Each top-level
+/// request is a root; transitive `requires` form the children.  A node
+/// that's already been printed once is shown as `name-version (*)` so
+/// shared deps don't multiply the output and cycles terminate.
+fn cmd_tree(
+    config: &Config,
+    packages: &[String],
+    refresh: bool,
+    frozen: bool,
+) -> Result<()> {
+    use std::collections::{HashMap, HashSet};
+
+    let resolver = build_resolver(config, refresh, frozen)?;
+    let resolved = resolver.resolve(packages)?;
+
+    let by_name: HashMap<String, &package::Package> = resolved
+        .packages()
+        .iter()
+        .map(|p| (p.name.clone(), p))
+        .collect();
+
+    let mut shown: HashSet<String> = HashSet::new();
+
+    for (i, req) in packages.iter().enumerate() {
+        let request = match package::PackageRequest::parse(req) {
+            Ok(r) => r,
+            Err(_) => {
+                println!("{}  (unparseable request)", req);
+                continue;
+            }
+        };
+        let Some(pkg) = by_name.get(&request.name) else {
+            println!("{}  (not in resolution)", req);
+            continue;
+        };
+        if i > 0 {
+            println!();
+        }
+        // Roots print without a connector; descendants print under
+        // `print_descendants` which manages the column drawing.
+        let id = pkg.id();
+        let suffix = if shown.contains(&id) { " (*)" } else { "" };
+        println!("{}{}", id, suffix);
+        if shown.contains(&id) {
+            continue;
+        }
+        shown.insert(id);
+        print_descendants(pkg, &by_name, &mut shown, "");
+    }
+
+    Ok(())
+}
+
+/// Print the dependency subtree of `parent`.  `prefix` is the column
+/// drawing accumulated from ancestor branches ("│   " when the
+/// ancestor was a non-last sibling, "    " when it was last).
+fn print_descendants(
+    parent: &package::Package,
+    by_name: &std::collections::HashMap<String, &package::Package>,
+    shown: &mut std::collections::HashSet<String>,
+    prefix: &str,
+) {
+    let mut deps: Vec<&package::Package> = Vec::new();
+    for dep_str in &parent.requires {
+        let Ok(req) = package::PackageRequest::parse(dep_str) else { continue };
+        if let Some(dep) = by_name.get(&req.name) {
+            deps.push(*dep);
+        }
+    }
+    let n = deps.len();
+    for (i, dep) in deps.iter().enumerate() {
+        let is_last = i + 1 == n;
+        let connector = if is_last { "└── " } else { "├── " };
+        let id = dep.id();
+        let already = shown.contains(&id);
+        let suffix = if already { " (*)" } else { "" };
+        println!("{}{}{}{}", prefix, connector, id, suffix);
+        if already {
+            continue;
+        }
+        shown.insert(id);
+        let next_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
+        print_descendants(dep, by_name, shown, &next_prefix);
+    }
 }
 
 // ---------------------------------------------------------------------------

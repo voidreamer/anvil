@@ -140,6 +140,13 @@ pub enum Commands {
     /// fail mid-run on a missing alias.
     Sync,
 
+    /// Print the dependency tree for a set of packages.
+    Tree {
+        /// Packages to resolve and visualise.
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+
     /// Scaffold a new package definition (or `--config` for the global config)
     Init {
         /// Package name (e.g., my-tools). Omit when using `--config`.
