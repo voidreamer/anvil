@@ -36,12 +36,16 @@ struct ChosenPackage {
 /// Mutable state carried through depth-first resolution.
 #[derive(Debug, Default)]
 struct ResolveState {
-    /// Packages output in dependency order.
+    /// Packages output in dependency order.  Each one has the variant
+    /// for `target_platform` already merged.
     resolved: Vec<Package>,
     /// Already-pushed package ids (`name-version`), for cycle short-circuit.
     seen: std::collections::HashSet<String>,
     /// Picked version per package name, plus every constraint seen for it.
     chosen: HashMap<String, ChosenPackage>,
+    /// Platform whose variants should be merged into chosen packages.
+    /// None means "do not apply any variant."
+    target_platform: Option<String>,
 }
 
 /// Build a conflict message that names the chosen version, every requester
@@ -146,7 +150,9 @@ impl Resolver {
         let pins = if let Some(lock_path) = Lockfile::find() {
             let lockfile = Lockfile::load(&lock_path)?;
             info!("Using lockfile: {:?}", lock_path);
-            lockfile.pins
+            // Overlay per-platform pins so a single lockfile resolved
+            // for multiple platforms picks the right entry on each.
+            lockfile.effective_pins(Package::current_platform())
         } else {
             HashMap::new()
         };
@@ -207,7 +213,12 @@ impl Resolver {
         let paths = self.config.all_package_paths();
         // Include config state in the cache key so different configs
         // don't share a cache (e.g. different filters or package paths).
-        let salt = format!("{:?}{:?}", self.config.package_paths, self.config.filters);
+        // The schema tag invalidates caches written by older anvil binaries
+        // that pre-merged platform variants into the cached Package.
+        let salt = format!(
+            "schema=v2|{:?}|{:?}",
+            self.config.package_paths, self.config.filters,
+        );
 
         // Try cache
         if !refresh {
@@ -308,9 +319,22 @@ impl Resolver {
         Ok(())
     }
 
-    /// Resolve a list of package requests
+    /// Resolve a list of package requests for the current platform.
     pub fn resolve(&self, requests: &[String]) -> Result<ResolvedPackages> {
-        let mut state = ResolveState::default();
+        self.resolve_for_platform(requests, Package::current_platform())
+    }
+
+    /// Resolve a list of package requests as if running on `platform`.
+    /// `None` means "no variant filter" (treat variants as inert).
+    pub fn resolve_for_platform(
+        &self,
+        requests: &[String],
+        platform: Option<&str>,
+    ) -> Result<ResolvedPackages> {
+        let mut state = ResolveState {
+            target_platform: platform.map(|s| s.to_string()),
+            ..ResolveState::default()
+        };
 
         // Expand aliases
         let mut expanded_requests: Vec<String> = Vec::new();
@@ -360,8 +384,11 @@ impl Resolver {
             return Ok(());
         }
 
-        // Pick a version.
-        let package = self.find_package(request, requester)?;
+        // Pick a version, then merge in the variant for the target
+        // platform so transitive `requires` and `environment` reflect
+        // what the locked-for platform actually pulls.
+        let raw = self.find_package(request, requester)?;
+        let package = raw.with_variant_for(state.target_platform.as_deref());
         let pkg_id = package.id();
 
         // Record the choice before recursing into deps, so a cycle
@@ -479,10 +506,15 @@ impl Resolver {
         Ok(version_list)
     }
 
-    /// Get a specific package
+    /// Get a specific package, with the variant for the current
+    /// platform already merged in.  Callers that want the raw package
+    /// (no variant applied) can use `find_package` via the resolver's
+    /// internal API.
     pub fn get_package(&self, id: &str) -> Result<Package> {
         let request = PackageRequest::parse(id)?;
-        self.find_package(&request, "<lookup>")
+        Ok(self
+            .find_package(&request, "<lookup>")?
+            .with_variant_for(Package::current_platform()))
     }
 
     /// Validate a package definition.  Returns `Err` for fatal problems
@@ -490,7 +522,11 @@ impl Resolver {
     /// non-fatal command-target issues (caller decides how to surface them).
     pub fn validate_package_report(&self, id: &str) -> Result<Vec<String>> {
         let request = PackageRequest::parse(id)?;
-        let package = self.find_package(&request, "<validate>")?;
+        // Validate against the current platform's view of the package so
+        // variant-only commands and requires are checked.
+        let package = self
+            .find_package(&request, "<validate>")?
+            .with_variant_for(Package::current_platform());
 
         for dep_str in &package.requires {
             let dep_request = PackageRequest::parse(dep_str)?;

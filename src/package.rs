@@ -87,6 +87,11 @@ impl Package {
 
     /// Load a package from a YAML file directly.
     /// If `root` is None, the parent directory of the file is used as the package root.
+    ///
+    /// Variants are NOT applied here.  The caller (typically the resolver)
+    /// chooses a target platform and calls `with_variant_for` to materialise
+    /// a per-platform copy.  This lets the resolver do cross-platform lock
+    /// resolution from a single cached scan.
     pub fn load_from_file(file_path: &Path, root: Option<&Path>) -> Result<Self> {
         if !file_path.exists() {
             anyhow::bail!("Package file not found: {:?}", file_path);
@@ -103,9 +108,6 @@ impl Package {
             .or_else(|| file_path.parent().map(|p| p.to_path_buf()))
             .unwrap_or_default();
         package.source_path = Some(file_path.to_path_buf());
-
-        // Apply variant for current platform
-        package.apply_current_variant();
 
         Ok(package)
     }
@@ -126,29 +128,38 @@ impl Package {
         Some(format!("{:x}", hasher.finalize()))
     }
     
-    /// Apply the variant matching the current platform
-    fn apply_current_variant(&mut self) {
-        let current_platform = if cfg!(target_os = "linux") {
-            "linux"
+    /// The platform name the running binary identifies as
+    /// (linux/macos/windows), or None on unsupported targets.
+    pub fn current_platform() -> Option<&'static str> {
+        if cfg!(target_os = "linux") {
+            Some("linux")
         } else if cfg!(target_os = "windows") {
-            "windows"
+            Some("windows")
         } else if cfg!(target_os = "macos") {
-            "macos"
+            Some("macos")
         } else {
-            return;
-        };
-        
-        for variant in &self.variants {
-            if variant.platform.as_deref() == Some(current_platform) {
-                // Merge variant requires
-                self.requires.extend(variant.requires.clone());
-                
-                // Merge variant environment
-                for (key, value) in &variant.environment {
-                    self.environment.insert(key.clone(), value.clone());
+            None
+        }
+    }
+
+    /// Return a copy of this package with the variant for `platform`
+    /// merged into its requires/environment.  If `platform` is None,
+    /// the current target's platform is used; on unsupported platforms
+    /// no variant is applied.
+    pub fn with_variant_for(&self, platform: Option<&str>) -> Self {
+        let mut out = self.clone();
+        let target = platform.or(Self::current_platform());
+        if let Some(target) = target {
+            for variant in &self.variants {
+                if variant.platform.as_deref() == Some(target) {
+                    out.requires.extend(variant.requires.clone());
+                    for (key, value) in &variant.environment {
+                        out.environment.insert(key.clone(), value.clone());
+                    }
                 }
             }
         }
+        out
     }
     
     /// Expand environment variables and tilde in a value

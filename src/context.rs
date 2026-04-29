@@ -58,12 +58,45 @@ impl<'de> Deserialize<'de> for Pin {
 /// Stored as `anvil.lock` in the project directory.  When present, the
 /// resolver prefers pinned versions over the default "highest matching"
 /// strategy.
+///
+/// `pins` holds packages that resolve identically on every locked
+/// platform.  `platform_pins` holds per-platform overrides for cases
+/// where a variant's `requires:` pulls in a different version (or a
+/// different package entirely) on different platforms — `anvil lock
+/// --all-platforms` records those, and the reader overlays the entry
+/// for its current platform on top of `pins`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lockfile {
     /// Original package requests that produced this lockfile.
     pub requests: Vec<String>,
+    /// Platforms this lockfile was resolved for.  Empty in legacy
+    /// lockfiles; treat empty as "current platform only."
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
     /// Pinned versions: package name -> pin entry.
     pub pins: HashMap<String, Pin>,
+    /// Per-platform pin overrides.  Keys are platform names
+    /// (linux/macos/windows); values overlay `pins` for that platform.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub platform_pins: HashMap<String, HashMap<String, Pin>>,
+}
+
+impl Lockfile {
+    /// Pins applicable to `platform`: start from common `pins`, overlay
+    /// any platform-specific entries.  Used by the resolver to choose
+    /// the right pin when a single lockfile carries diffs across
+    /// platforms.
+    pub fn effective_pins(&self, platform: Option<&str>) -> HashMap<String, Pin> {
+        let mut out = self.pins.clone();
+        if let Some(p) = platform {
+            if let Some(over) = self.platform_pins.get(p) {
+                for (k, v) in over {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        out
+    }
 }
 
 impl Lockfile {

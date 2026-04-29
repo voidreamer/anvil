@@ -104,6 +104,13 @@ pub enum Commands {
         /// Re-resolve even if anvil.lock already exists
         #[arg(long)]
         update: bool,
+
+        /// Resolve for every supported platform (linux, macos, windows)
+        /// and union the results, so a single lockfile is correct on
+        /// any of them.  Variant-specific `requires:` are recorded under
+        /// the relevant platform.
+        #[arg(long)]
+        all_platforms: bool,
     },
 
     /// Save and restore complete resolved environments

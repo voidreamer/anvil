@@ -66,8 +66,12 @@ fn main() -> Result<()> {
         Commands::Validate { package, strict } => {
             cmd_validate(&config, package, strict, refresh)?;
         }
-        Commands::Lock { packages, update: _ } => {
-            cmd_lock(&config, &packages, refresh)?;
+        Commands::Lock {
+            packages,
+            update: _,
+            all_platforms,
+        } => {
+            cmd_lock(&config, &packages, refresh, all_platforms)?;
         }
         Commands::Context { action } => match action {
             ContextAction::Save { packages, output } => {
@@ -397,34 +401,111 @@ fn cmd_validate(
 // ---------------------------------------------------------------------------
 
 /// Resolve packages and write pinned versions to `anvil.lock`.
-fn cmd_lock(config: &Config, packages: &[String], refresh: bool) -> Result<()> {
-    // Always resolve fresh (ignore existing lockfile).
+///
+/// When `all_platforms` is true, the resolver runs once per supported
+/// platform and the resulting pins are unioned: pins shared by every
+/// platform live in `pins`, and pins that differ live under
+/// `platform_pins[<platform>]`.  This makes a single lockfile correct
+/// on Linux, macOS, and Windows even when a package's variant block
+/// pulls in different transitive deps per platform.
+fn cmd_lock(
+    config: &Config,
+    packages: &[String],
+    refresh: bool,
+    all_platforms: bool,
+) -> Result<()> {
     let resolver = Resolver::new_unlocked(config, refresh)?;
-    let resolved = resolver.resolve(packages)?;
 
-    let mut pins = std::collections::HashMap::new();
-    for pkg in resolved.packages() {
-        pins.insert(
-            pkg.name.clone(),
-            Pin {
-                version: pkg.version.clone(),
-                content_hash: pkg.content_hash(),
-            },
-        );
+    // Which platforms to resolve for.
+    let targets: Vec<&str> = if all_platforms {
+        vec!["linux", "macos", "windows"]
+    } else {
+        match package::Package::current_platform() {
+            Some(p) => vec![p],
+            None => vec![],
+        }
+    };
+
+    // Resolve per platform.
+    type PinMap = std::collections::HashMap<String, Pin>;
+    let mut per_platform: std::collections::BTreeMap<String, PinMap> =
+        std::collections::BTreeMap::new();
+    for &platform in &targets {
+        let resolved = resolver.resolve_for_platform(packages, Some(platform))?;
+        let mut pins = PinMap::new();
+        for pkg in resolved.packages() {
+            pins.insert(
+                pkg.name.clone(),
+                Pin {
+                    version: pkg.version.clone(),
+                    content_hash: pkg.content_hash(),
+                },
+            );
+        }
+        per_platform.insert(platform.to_string(), pins);
+    }
+
+    // Union: any (name, version, hash) shared by *every* resolved
+    // platform goes into common `pins`; the rest goes under
+    // `platform_pins`.
+    let mut common: PinMap = std::collections::HashMap::new();
+    let mut platform_pins: std::collections::HashMap<String, PinMap> =
+        std::collections::HashMap::new();
+
+    if let Some(first) = per_platform.values().next().cloned() {
+        for (name, pin) in first {
+            let same_everywhere = per_platform.values().all(|m| {
+                m.get(&name)
+                    .map(|p| p.version == pin.version && p.content_hash == pin.content_hash)
+                    .unwrap_or(false)
+            });
+            if same_everywhere {
+                common.insert(name, pin);
+            }
+        }
+    }
+    for (platform, pins) in &per_platform {
+        for (name, pin) in pins {
+            if !common.contains_key(name) {
+                platform_pins
+                    .entry(platform.clone())
+                    .or_default()
+                    .insert(name.clone(), pin.clone());
+            }
+        }
     }
 
     let lockfile = Lockfile {
         requests: packages.to_vec(),
-        pins,
+        platforms: targets.iter().map(|s| s.to_string()).collect(),
+        pins: common,
+        platform_pins,
     };
 
     let lock_path = std::path::PathBuf::from("anvil.lock");
     lockfile.save(&lock_path)?;
 
-    println!("Locked {} packages to anvil.lock:", resolved.packages().len());
-    for pkg in resolved.packages() {
-        println!("  {}-{}", pkg.name, pkg.version);
+    let total: usize = per_platform.values().map(|m| m.len()).sum();
+    println!(
+        "Locked {} pin(s) across {} platform(s) to anvil.lock",
+        lockfile.pins.len()
+            + lockfile
+                .platform_pins
+                .values()
+                .map(|m| m.len())
+                .sum::<usize>(),
+        targets.len(),
+    );
+    for (name, pin) in &lockfile.pins {
+        println!("  {}-{}", name, pin.version);
     }
+    for (platform, pins) in &lockfile.platform_pins {
+        println!("  [{}]", platform);
+        for (name, pin) in pins {
+            println!("    {}-{}", name, pin.version);
+        }
+    }
+    let _ = total; // touched for clarity above
 
     Ok(())
 }

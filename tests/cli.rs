@@ -1206,6 +1206,100 @@ fn drift_warning_when_package_changes_after_lock() {
         .stderr(predicate::str::contains("widget-1.0"));
 }
 
+// ---- cross-platform lockfile ----
+
+/// Set up a temp dir with a package whose `variants:` block adds a
+/// different transitive dep on each platform, plus the per-platform
+/// candidate packages.  Returns (TempDir, config_path).
+fn setup_per_platform_variants() -> (TempDir, String) {
+    let dir = TempDir::new().unwrap();
+    let pkg_dir = dir.path().join("packages");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    // Three platform-specific runtimes that only one platform pulls in.
+    for (name, ver) in [("gcc-runtime", "7"), ("clang-runtime", "15"), ("msvc-runtime", "2022")] {
+        let d = pkg_dir.join(format!("{}/{}", name, ver));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("package.yaml"),
+            format!("name: {}\nversion: \"{}\"\n", name, ver),
+        )
+        .unwrap();
+    }
+
+    // omega-1.0 pulls in a different runtime on each platform.
+    fs::write(
+        pkg_dir.join("omega-1.0.yaml"),
+        r#"
+name: omega
+version: "1.0"
+variants:
+  - platform: linux
+    requires:
+      - gcc-runtime-7
+  - platform: macos
+    requires:
+      - clang-runtime-15
+  - platform: windows
+    requires:
+      - msvc-runtime-2022
+"#,
+    )
+    .unwrap();
+
+    let config_path = dir.path().join("config.yaml");
+    fs::write(
+        &config_path,
+        format!("package_paths:\n  - {}\n", pkg_dir.display()),
+    )
+    .unwrap();
+    (dir, config_path.to_string_lossy().to_string())
+}
+
+#[test]
+fn lock_all_platforms_records_per_platform_pins() {
+    let (dir, cfg) = setup_per_platform_variants();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "omega-1.0", "--all-platforms"])
+        .assert()
+        .success();
+
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    // omega is the same on every platform — common pin.
+    assert!(lock.contains("omega"), "omega should be pinned:\n{}", lock);
+    // Each runtime shows up under its platform overlay.
+    assert!(
+        lock.contains("platform_pins:"),
+        "expected platform_pins overlay:\n{}",
+        lock,
+    );
+    assert!(lock.contains("gcc-runtime"), "missing linux runtime:\n{}", lock);
+    assert!(lock.contains("clang-runtime"), "missing macos runtime:\n{}", lock);
+    assert!(lock.contains("msvc-runtime"), "missing windows runtime:\n{}", lock);
+    // Lockfile records which platforms it covers.
+    assert!(lock.contains("platforms:"), "missing platforms list:\n{}", lock);
+}
+
+#[test]
+fn current_platform_lock_skips_overlay() {
+    let (dir, cfg) = setup_per_platform_variants();
+    anvil(&cfg)
+        .current_dir(dir.path())
+        .args(["lock", "omega-1.0"])
+        .assert()
+        .success();
+
+    let lock = fs::read_to_string(dir.path().join("anvil.lock")).unwrap();
+    // Without --all-platforms, only the running platform is locked.
+    // The overlay should be absent (skip_serializing_if = empty).
+    assert!(
+        !lock.contains("platform_pins:"),
+        "single-platform lock should not emit overlay:\n{}",
+        lock,
+    );
+}
+
 #[test]
 fn missing_dep_names_the_parent_package() {
     let dir = TempDir::new().unwrap();
