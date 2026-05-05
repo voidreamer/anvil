@@ -24,29 +24,29 @@ pub const EXE_SUFFIX: &str = "";
 pub struct Package {
     /// Package name
     pub name: String,
-    
+
     /// Package version
     pub version: String,
-    
+
     /// Human-readable description
     pub description: Option<String>,
-    
+
     /// Required packages (dependencies)
     #[serde(default)]
     pub requires: Vec<String>,
-    
+
     /// Environment variables to set
     #[serde(default)]
     pub environment: IndexMap<String, String>,
-    
+
     /// Command aliases
     #[serde(default)]
     pub commands: HashMap<String, String>,
-    
+
     /// Platform-specific variants
     #[serde(default)]
     pub variants: Vec<PackageVariant>,
-    
+
     /// Path to the package root (set after loading, omitted from package.yaml)
     #[serde(default)]
     pub root: PathBuf,
@@ -56,11 +56,11 @@ pub struct Package {
 pub struct PackageVariant {
     /// Platform filter (linux, windows, macos)
     pub platform: Option<String>,
-    
+
     /// Additional requires for this variant
     #[serde(default)]
     pub requires: Vec<String>,
-    
+
     /// Additional environment for this variant
     #[serde(default)]
     pub environment: IndexMap<String, String>,
@@ -101,12 +101,12 @@ impl Package {
 
         Ok(package)
     }
-    
+
     /// Get the full package identifier (name-version)
     pub fn id(&self) -> String {
         format!("{}-{}", self.name, self.version)
     }
-    
+
     /// Apply the variant matching the current platform
     fn apply_current_variant(&mut self) {
         let current_platform = if cfg!(target_os = "linux") {
@@ -118,31 +118,23 @@ impl Package {
         } else {
             return;
         };
-        
+
         for variant in &self.variants {
             if variant.platform.as_deref() == Some(current_platform) {
-                // Merge variant requires
                 self.requires.extend(variant.requires.clone());
-                
-                // Merge variant environment
                 for (key, value) in &variant.environment {
                     self.environment.insert(key.clone(), value.clone());
                 }
             }
         }
     }
-    
+
     /// Expand environment variables and tilde in a value
     pub fn expand_env_value(&self, value: &str, env: &HashMap<String, String>) -> String {
         let mut result = value.to_string();
 
-        // Replace ${PACKAGE_ROOT} with actual path
         result = result.replace("${PACKAGE_ROOT}", &self.root.to_string_lossy());
-
-        // Replace ${VERSION} with package version
         result = result.replace("${VERSION}", &self.version);
-
-        // Replace ${NAME} with package name
         result = result.replace("${NAME}", &self.name);
 
         // Platform-aware builtins so a single yaml line can compose path
@@ -150,17 +142,18 @@ impl Package {
         result = result.replace("${PATHSEP}", PATHSEP);
         result = result.replace("${EXE_SUFFIX}", EXE_SUFFIX);
 
-        // Replace other ${VAR} references
         for (key, val) in env {
             result = result.replace(&format!("${{{}}}", key), val);
         }
 
-        // Replace remaining ${VAR} with current environment
+        // Anything still unresolved falls back to the current process env.
         let re = regex::Regex::new(r"\$\{([^}]+)\}").unwrap();
-        result = re.replace_all(&result, |caps: &regex::Captures| {
-            let var = &caps[1];
-            std::env::var(var).unwrap_or_default()
-        }).to_string();
+        result = re
+            .replace_all(&result, |caps: &regex::Captures| {
+                let var = &caps[1];
+                std::env::var(var).unwrap_or_default()
+            })
+            .to_string();
 
         // Expand `~/` everywhere it appears at a segment boundary
         // (start-of-value, or after `:` / `;`).  Path-list values like
@@ -179,23 +172,26 @@ impl Package {
 
         result
     }
-    
+
     /// Get resolved environment for this package
-    pub fn resolved_environment(&self, base_env: &HashMap<String, String>) -> HashMap<String, String> {
+    pub fn resolved_environment(
+        &self,
+        base_env: &HashMap<String, String>,
+    ) -> HashMap<String, String> {
         let mut env = base_env.clone();
-        
+
         for (key, value) in &self.environment {
             let expanded = self.expand_env_value(value, &env);
             env.insert(key.clone(), expanded);
         }
-        
+
         env
     }
 }
 
 /// Tokenize a command-alias value into `[program, args...]`.
 ///
-/// If the whole value — after tilde expansion — names an existing file, it's
+/// If the whole value, after tilde expansion, names an existing file, it's
 /// treated as a single executable path (so paths with spaces like
 /// `/Applications/Houdini 20/bin/hython` work without quoting).  Otherwise the
 /// value is split with POSIX shell rules and each token is tilde-expanded.
@@ -240,7 +236,6 @@ impl PackageRequest {
     /// with an ASCII digit).  This allows hyphenated package names such as
     /// `studio-blender-tools` to be used without being misinterpreted.
     pub fn parse(s: &str) -> Result<Self> {
-        // Try to split name and version on the last '-'
         if let Some(idx) = s.rfind('-') {
             let name = &s[..idx];
             let version_part = &s[idx + 1..];
@@ -254,7 +249,6 @@ impl PackageRequest {
                 .map_or(false, |c| c.is_ascii_digit());
 
             if starts_with_digit {
-                // Parse version constraint
                 let constraint = if version_part.ends_with('+') {
                     VersionConstraint::Minimum(version_part.trim_end_matches('+').to_string())
                 } else if version_part.contains("..") {
@@ -285,7 +279,7 @@ impl PackageRequest {
             version_constraint: VersionConstraint::Any,
         })
     }
-    
+
     /// Check if a version matches this constraint
     pub fn matches(&self, version: &str) -> bool {
         match &self.version_constraint {
@@ -345,14 +339,18 @@ mod tests {
     fn parse_range_version() {
         let req = PackageRequest::parse("maya-2024..2025").unwrap();
         assert_eq!(req.name, "maya");
-        assert!(matches!(req.version_constraint, VersionConstraint::Range(a, b) if a == "2024" && b == "2025"));
+        assert!(
+            matches!(req.version_constraint, VersionConstraint::Range(a, b) if a == "2024" && b == "2025")
+        );
     }
 
     #[test]
     fn parse_oneof_version() {
         let req = PackageRequest::parse("python-3.10|3.11").unwrap();
         assert_eq!(req.name, "python");
-        assert!(matches!(req.version_constraint, VersionConstraint::OneOf(ref v) if v == &["3.10", "3.11"]));
+        assert!(
+            matches!(req.version_constraint, VersionConstraint::OneOf(ref v) if v == &["3.10", "3.11"])
+        );
     }
 
     #[test]
@@ -475,7 +473,10 @@ mod tests {
             root: PathBuf::from("/opt/maya"),
         };
         let env = HashMap::new();
-        assert_eq!(pkg.expand_env_value("${NAME}-${VERSION}", &env), "maya-2024");
+        assert_eq!(
+            pkg.expand_env_value("${NAME}-${VERSION}", &env),
+            "maya-2024"
+        );
     }
 
     #[test]

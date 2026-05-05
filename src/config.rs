@@ -182,7 +182,6 @@ impl Config {
             config.merge(project);
         }
 
-        // Apply platform overrides and expand paths after merging
         config.apply_platform_overrides();
         config.expand_paths();
 
@@ -420,7 +419,10 @@ impl Config {
     }
 
     /// Run a list of hook commands. Returns Err if any hook exits non-zero.
-    pub fn run_hooks(hooks: &[String], env: &std::collections::HashMap<String, String>) -> Result<()> {
+    pub fn run_hooks(
+        hooks: &[String],
+        env: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
         for cmd in hooks {
             let shell = if cfg!(target_os = "windows") {
                 "cmd"
@@ -441,7 +443,11 @@ impl Config {
                 .with_context(|| format!("Failed to run hook: {}", cmd))?;
 
             if !status.success() {
-                anyhow::bail!("Hook failed (exit {}): {}", status.code().unwrap_or(-1), cmd);
+                anyhow::bail!(
+                    "Hook failed (exit {}): {}",
+                    status.code().unwrap_or(-1),
+                    cmd
+                );
             }
         }
         Ok(())

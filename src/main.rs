@@ -43,18 +43,30 @@ fn main() -> Result<()> {
         )
         .init();
 
-    // Load config
     let config = Config::load()?;
     let refresh = cli.refresh;
 
     match cli.command {
-        Commands::Env { packages, export, json } => {
+        Commands::Env {
+            packages,
+            export,
+            json,
+        } => {
             cmd_env(&config, &packages, export, json, refresh)?;
         }
-        Commands::Run { packages, env_vars, command } => {
+        Commands::Run {
+            packages,
+            env_vars,
+            command,
+        } => {
             cmd_run(&config, &packages, &env_vars, &command, refresh)?;
         }
-        Commands::Shell { packages, shell, env_only, no_sweep } => {
+        Commands::Shell {
+            packages,
+            shell,
+            env_only,
+            no_sweep,
+        } => {
             cmd_shell(&config, &packages, shell, refresh, env_only, no_sweep)?;
         }
         Commands::List { package } => {
@@ -66,7 +78,10 @@ fn main() -> Result<()> {
         Commands::Validate { package, strict } => {
             cmd_validate(&config, package, strict, refresh)?;
         }
-        Commands::Lock { packages, update: _ } => {
+        Commands::Lock {
+            packages,
+            update: _,
+        } => {
             cmd_lock(&config, &packages, refresh)?;
         }
         Commands::Context { action } => match action {
@@ -83,7 +98,12 @@ fn main() -> Result<()> {
                 cmd_context_shell(&config, &file, shell)?;
             }
         },
-        Commands::Init { name, version, flat, config: scaffold_config } => {
+        Commands::Init {
+            name,
+            version,
+            flat,
+            config: scaffold_config,
+        } => {
             if scaffold_config {
                 cmd_init_config()?;
             } else {
@@ -98,7 +118,11 @@ fn main() -> Result<()> {
         Commands::Completions { shell } => {
             Cli::print_completions(shell);
         }
-        Commands::Wrap { packages, dir, shell } => {
+        Commands::Wrap {
+            packages,
+            dir,
+            shell,
+        } => {
             cmd_wrap(&config, &packages, &dir, &shell, refresh)?;
         }
         Commands::Publish { target, path, flat } => {
@@ -146,17 +170,14 @@ fn cmd_run(
 ) -> Result<()> {
     use std::process::Command;
 
-    // Pre-resolve hooks
     Config::run_hooks(&config.hooks.pre_resolve, &std::env::vars().collect())?;
 
     let resolver = Resolver::new(config, refresh)?;
     let resolved = resolver.resolve(packages)?;
     let mut env = resolved.environment();
 
-    // Post-resolve hooks
     Config::run_hooks(&config.hooks.post_resolve, &env)?;
 
-    // Add user-specified env vars
     for var in env_vars {
         if let Some((key, value)) = var.split_once('=') {
             env.insert(key.to_string(), value.to_string());
@@ -188,7 +209,6 @@ fn cmd_run(
     let mut all_args = tokens;
     all_args.extend(command[1..].iter().cloned());
 
-    // Pre-run hooks
     Config::run_hooks(&config.hooks.pre_run, &env)?;
 
     // Surface the resolved argv at `-v`/`-vv` so when an exec fails with
@@ -256,14 +276,12 @@ fn cmd_list(config: &Config, package: Option<String>, refresh: bool) -> Result<(
     let resolver = Resolver::new(config, refresh)?;
 
     if let Some(name) = package {
-        // List versions of specific package
         let versions = resolver.list_versions(&name)?;
         println!("{}:", name);
         for version in versions {
             println!("  - {}", version);
         }
     } else {
-        // List all packages
         let packages = resolver.list_packages()?;
         if packages.is_empty() {
             if let Some(hint) = config.first_run_hint() {
@@ -356,9 +374,9 @@ fn cmd_validate(
         match report {
             Ok(cmd_problems) => {
                 if cmd_problems.is_empty() {
-                    println!("✓ {}", pkg_name);
+                    println!("OK {}", pkg_name);
                 } else {
-                    let label = if strict { "✗" } else { "!" };
+                    let label = if strict { "FAIL" } else { "WARN" };
                     println!("{} {}: command problems:", label, pkg_name);
                     for p in &cmd_problems {
                         println!("    - {}", p);
@@ -371,7 +389,7 @@ fn cmd_validate(
                 }
             }
             Err(e) => {
-                println!("✗ {}: {}", pkg_name, e);
+                println!("FAIL {}: {}", pkg_name, e);
                 errors += 1;
             }
         }
@@ -383,7 +401,7 @@ fn cmd_validate(
 
     if warnings > 0 {
         println!(
-            "\nAll dependencies resolve ({} package(s) with command warnings — use --strict to fail on these).",
+            "\nAll dependencies resolve ({} package(s) with command warnings; use --strict to fail on these).",
             warnings
         );
     } else {
@@ -392,13 +410,9 @@ fn cmd_validate(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Lock
-// ---------------------------------------------------------------------------
-
 /// Resolve packages and write pinned versions to `anvil.lock`.
 fn cmd_lock(config: &Config, packages: &[String], refresh: bool) -> Result<()> {
-    // Always resolve fresh (ignore existing lockfile).
+    // Always resolve fresh, ignoring any existing lockfile.
     let resolver = Resolver::new_unlocked(config, refresh)?;
     let resolved = resolver.resolve(packages)?;
 
@@ -415,17 +429,16 @@ fn cmd_lock(config: &Config, packages: &[String], refresh: bool) -> Result<()> {
     let lock_path = std::path::PathBuf::from("anvil.lock");
     lockfile.save(&lock_path)?;
 
-    println!("Locked {} packages to anvil.lock:", resolved.packages().len());
+    println!(
+        "Locked {} packages to anvil.lock:",
+        resolved.packages().len()
+    );
     for pkg in resolved.packages() {
         println!("  {}-{}", pkg.name, pkg.version);
     }
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Context
-// ---------------------------------------------------------------------------
 
 /// Resolve packages and save the full environment to a context file.
 fn cmd_context_save(
@@ -526,10 +539,6 @@ fn cmd_context_shell(config: &Config, file: &str, shell_override: Option<String>
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Init
-// ---------------------------------------------------------------------------
-
 /// Scaffold a new package definition.
 fn cmd_init(name: &str, version: &str, flat: bool) -> Result<()> {
     let template = format!(
@@ -586,7 +595,7 @@ fn cmd_init_config() -> Result<()> {
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
 
-    let template = r#"# Anvil global config — see https://github.com/voidreamer/anvil
+    let template = r#"# Anvil global config. See https://github.com/voidreamer/anvil
 
 # Where to look for package definitions, in priority order.
 # Each entry can be a directory of flat `<name>-<version>.yaml` files
@@ -619,10 +628,6 @@ package_paths:
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Wrap
-// ---------------------------------------------------------------------------
-
 /// Generate wrapper scripts for all commands defined by the resolved packages.
 fn cmd_wrap(
     config: &Config,
@@ -644,7 +649,6 @@ fn cmd_wrap(
     let dir_path = std::path::Path::new(dir);
     std::fs::create_dir_all(dir_path)?;
 
-    // Build the package request string for the wrapper
     let pkg_args: Vec<String> = resolved.packages().iter().map(|p| p.id()).collect();
     let pkg_str = pkg_args.join(" ");
 
@@ -654,7 +658,6 @@ fn cmd_wrap(
         let out_path = dir_path.join(alias);
         std::fs::write(&out_path, script)?;
 
-        // Make executable on Unix
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -691,10 +694,6 @@ fn generate_wrapper(shell: &str, packages: &str, command: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Publish
-// ---------------------------------------------------------------------------
-
 /// Publish a package to a target package path.
 fn cmd_publish(target: &str, source: Option<&str>, flat: bool) -> Result<()> {
     use crate::package::Package;
@@ -704,7 +703,6 @@ fn cmd_publish(target: &str, source: Option<&str>, flat: bool) -> Result<()> {
         None => std::env::current_dir()?,
     };
 
-    // Load and validate the package
     let pkg = if source_dir.is_file() {
         Package::load_from_file(&source_dir, None)?
     } else {
@@ -717,23 +715,25 @@ fn cmd_publish(target: &str, source: Option<&str>, flat: bool) -> Result<()> {
     }
 
     if flat {
-        // Publish as flat YAML file
         let filename = format!("{}-{}.yaml", pkg.name, pkg.version);
         let dest = target_path.join(&filename);
         if dest.exists() {
             anyhow::bail!("{} already exists in target", filename);
         }
 
-        // Re-read the source YAML to publish it verbatim
         let src_file = if source_dir.is_file() {
             source_dir.clone()
         } else {
             source_dir.join("package.yaml")
         };
         std::fs::copy(&src_file, &dest)?;
-        println!("Published {}-{} to {}", pkg.name, pkg.version, dest.display());
+        println!(
+            "Published {}-{} to {}",
+            pkg.name,
+            pkg.version,
+            dest.display()
+        );
     } else {
-        // Publish as nested directory
         let dest_dir = target_path.join(&pkg.name).join(&pkg.version);
         if dest_dir.exists() {
             anyhow::bail!(
@@ -744,7 +744,6 @@ fn cmd_publish(target: &str, source: Option<&str>, flat: bool) -> Result<()> {
             );
         }
 
-        // Copy the entire source directory tree
         let src = if source_dir.is_file() {
             source_dir
                 .parent()

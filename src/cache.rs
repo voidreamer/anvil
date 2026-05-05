@@ -41,14 +41,12 @@ pub fn compute_fingerprint(package_paths: &[PathBuf], config_salt: &str) -> u64 
         base.hash(&mut hasher);
         hash_dir_entries(base, &mut hasher);
 
-        // One level deeper for nested packages
         if let Ok(entries) = std::fs::read_dir(base) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
                     hash_dir_entries(&path, &mut hasher);
 
-                    // Check package.yaml files inside version dirs
                     if let Ok(sub_entries) = std::fs::read_dir(&path) {
                         for sub in sub_entries.flatten() {
                             if sub.path().is_dir() {
@@ -116,7 +114,10 @@ fn hash_file_mtime(path: &Path, hasher: &mut impl Hasher) {
 
 /// Try to load cached packages.  Returns `Some(packages)` if the cache
 /// is valid (fingerprint matches), `None` otherwise.
-pub fn load(package_paths: &[PathBuf], config_salt: &str) -> Option<HashMap<String, HashMap<String, Package>>> {
+pub fn load(
+    package_paths: &[PathBuf],
+    config_salt: &str,
+) -> Option<HashMap<String, HashMap<String, Package>>> {
     let path = cache_path()?;
     if !path.exists() {
         return None;

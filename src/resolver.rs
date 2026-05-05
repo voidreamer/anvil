@@ -119,7 +119,6 @@ impl Resolver {
         // don't share a cache (e.g. different filters or package paths).
         let salt = format!("{:?}{:?}", self.config.package_paths, self.config.filters);
 
-        // Try cache
         if !refresh {
             if let Some(cached) = cache::load(&paths, &salt) {
                 self.package_cache = cached;
@@ -131,11 +130,10 @@ impl Resolver {
             info!("Bypassing package scan cache (--refresh)");
         }
 
-        // Full scan
         self.scan_packages()?;
         self.apply_filters();
 
-        // Save to cache (best-effort, before filter so cache stores everything)
+        // Best-effort: a save failure shouldn't block resolution.
         if let Err(e) = cache::save(&paths, &salt, &self.package_cache) {
             debug!("Failed to save cache: {}", e);
         }
@@ -150,8 +148,7 @@ impl Resolver {
             return;
         }
 
-        self.package_cache
-            .retain(|name, _| filters.allows(name));
+        self.package_cache.retain(|name, _| filters.allows(name));
     }
 
     /// Scan package paths and load all packages.
@@ -223,7 +220,6 @@ impl Resolver {
         let mut resolved: Vec<Package> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        // Expand aliases
         let mut expanded_requests: Vec<String> = Vec::new();
         for req in requests {
             if let Some(alias_packages) = self.config.resolve_alias(req) {
@@ -233,7 +229,6 @@ impl Resolver {
             }
         }
 
-        // Resolve each request
         for req_str in &expanded_requests {
             let request = PackageRequest::parse(req_str)
                 .with_context(|| format!("Invalid package request: {}", req_str))?;
@@ -273,7 +268,9 @@ impl Resolver {
 
     /// Find a package matching a request, preferring a pinned version.
     fn find_package(&self, request: &PackageRequest) -> Result<Package> {
-        let versions = self.package_cache.get(&request.name)
+        let versions = self
+            .package_cache
+            .get(&request.name)
             .ok_or_else(|| anyhow::anyhow!("Package not found: {}", request.name))?;
 
         // Lockfile pin takes priority
@@ -324,7 +321,9 @@ impl Resolver {
 
     /// List versions of a specific package
     pub fn list_versions(&self, name: &str) -> Result<Vec<String>> {
-        let versions = self.package_cache.get(name)
+        let versions = self
+            .package_cache
+            .get(name)
             .ok_or_else(|| anyhow::anyhow!("Package not found: {}", name))?;
 
         let mut version_list: Vec<String> = versions.keys().cloned().collect();
@@ -407,8 +406,7 @@ fn check_executable(program: &str) -> std::result::Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::metadata(&resolved)
-            .map_err(|e| format!("stat failed: {}", e))?;
+        let meta = std::fs::metadata(&resolved).map_err(|e| format!("stat failed: {}", e))?;
         if !meta.is_file() {
             return Err("not a regular file".into());
         }
@@ -418,8 +416,7 @@ fn check_executable(program: &str) -> std::result::Result<(), String> {
     }
     #[cfg(not(unix))]
     {
-        let meta = std::fs::metadata(&resolved)
-            .map_err(|e| format!("stat failed: {}", e))?;
+        let meta = std::fs::metadata(&resolved).map_err(|e| format!("stat failed: {}", e))?;
         if !meta.is_file() {
             return Err("not a regular file".into());
         }
