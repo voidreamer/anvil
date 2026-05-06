@@ -174,11 +174,10 @@ fn validate_all() {
     // (e.g. /usr/autodesk/maya2024/bin/maya), so validate reports
     // command warnings but still succeeds.  Dependencies do resolve.
     let (_dir, cfg) = setup_env();
-    anvil(&cfg)
-        .args(["validate"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("All dependencies resolve").or(predicate::str::contains("All packages valid!")));
+    anvil(&cfg).args(["validate"]).assert().success().stdout(
+        predicate::str::contains("All dependencies resolve")
+            .or(predicate::str::contains("All packages valid!")),
+    );
 }
 
 #[test]
@@ -325,7 +324,7 @@ fn run_quoted_tokens_in_alias() {
 #[test]
 fn flat_and_nested_coexist() {
     let (_dir, cfg) = setup_env();
-    // maya is flat, python is nested — both should appear
+    // maya is flat, python is nested; both should appear
     anvil(&cfg)
         .args(["list"])
         .assert()
@@ -423,7 +422,13 @@ fn context_save_and_show() {
 
     // Save
     anvil(&cfg)
-        .args(["context", "save", "maya-2024", "-o", ctx_path.to_str().unwrap()])
+        .args([
+            "context",
+            "save",
+            "maya-2024",
+            "-o",
+            ctx_path.to_str().unwrap(),
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Saved context"));
@@ -445,7 +450,13 @@ fn context_show_json() {
     let ctx_path = dir.path().join("test.ctx.json");
 
     anvil(&cfg)
-        .args(["context", "save", "maya-2024", "-o", ctx_path.to_str().unwrap()])
+        .args([
+            "context",
+            "save",
+            "maya-2024",
+            "-o",
+            ctx_path.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
@@ -462,7 +473,13 @@ fn context_show_export() {
     let ctx_path = dir.path().join("test.ctx.json");
 
     anvil(&cfg)
-        .args(["context", "save", "maya-2024", "-o", ctx_path.to_str().unwrap()])
+        .args([
+            "context",
+            "save",
+            "maya-2024",
+            "-o",
+            ctx_path.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
@@ -866,7 +883,12 @@ fn publish_refuses_overwrite() {
     Command::cargo_bin("anvil")
         .unwrap()
         .env("RUST_LOG", "anvil=error")
-        .args(["publish", target.to_str().unwrap(), "--path", src.to_str().unwrap()])
+        .args([
+            "publish",
+            target.to_str().unwrap(),
+            "--path",
+            src.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
@@ -874,7 +896,12 @@ fn publish_refuses_overwrite() {
     Command::cargo_bin("anvil")
         .unwrap()
         .env("RUST_LOG", "anvil=error")
-        .args(["publish", target.to_str().unwrap(), "--path", src.to_str().unwrap()])
+        .args([
+            "publish",
+            target.to_str().unwrap(),
+            "--path",
+            src.to_str().unwrap(),
+        ])
         .assert()
         .failure();
 }
@@ -917,7 +944,9 @@ fn list_hint_when_package_paths_missing() {
         .args(["list"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("None of the configured package_paths exist"));
+        .stderr(predicate::str::contains(
+            "None of the configured package_paths exist",
+        ));
 }
 
 #[test]

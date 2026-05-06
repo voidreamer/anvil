@@ -6,7 +6,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 #[command(name = "anvil")]
 #[command(author = "Alejandro Cabrera <voidreamer@gmail.com>")]
 #[command(version)]
-#[command(about = "Forge your environment 🔨 — Fast package resolution for VFX pipelines", long_about = None)]
+#[command(about = "Forge your environment. Fast package resolution for VFX pipelines", long_about = None)]
 pub struct Cli {
     /// Ignore any cached package scan and re-read all package files.
     #[arg(long, global = true)]
@@ -63,7 +63,7 @@ pub enum Commands {
         #[arg(short, long)]
         shell: Option<String>,
 
-        /// Don't materialise `commands:` as PATH shims — compose the env only.
+        /// Don't materialise `commands:` as PATH shims; compose the env only.
         #[arg(long)]
         env_only: bool,
 
@@ -170,12 +170,7 @@ pub enum Commands {
 impl Cli {
     /// Generate shell completions and write to stdout.
     pub fn print_completions(shell: clap_complete::Shell) {
-        clap_complete::generate(
-            shell,
-            &mut Self::command(),
-            "anvil",
-            &mut std::io::stdout(),
-        );
+        clap_complete::generate(shell, &mut Self::command(), "anvil", &mut std::io::stdout());
     }
 }
 

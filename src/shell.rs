@@ -13,21 +13,17 @@ pub const SHIM_DIR_PREFIX: &str = "anvil-shell-";
 
 /// Detect the user's preferred shell
 pub fn detect_shell() -> String {
-    // Check SHELL environment variable
     if let Ok(shell) = std::env::var("SHELL") {
         return shell;
     }
-    
-    // Platform defaults
+
     if cfg!(target_os = "windows") {
-        // Check for PowerShell first
         if which::which("pwsh").is_ok() {
             return "pwsh".to_string();
         }
         return "cmd".to_string();
     }
-    
-    // Unix default
+
     "bash".to_string()
 }
 
@@ -37,34 +33,31 @@ pub fn spawn_shell(shell: &str, env: &HashMap<String, String>) -> Result<()> {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(shell);
-    
+
     println!("Starting {} shell with resolved environment...", shell_name);
     println!("Type 'exit' to return to your original shell.\n");
-    
+
     let mut cmd = Command::new(shell);
-    
-    // Set up environment
+
     cmd.env_clear();
     cmd.envs(env);
-    
-    // Add anvil indicator to prompt
+
+    // Tag the prompt so users see when they're inside an anvil shell.
     if let Some(prompt) = env.get("PS1") {
         let new_prompt = format!("[anvil] {}", prompt);
         cmd.env("PS1", new_prompt);
     } else {
-        // Set a simple prompt for bash
         cmd.env("PS1", "[anvil] \\u@\\h:\\w\\$ ");
     }
-    
-    // Platform-specific setup
+
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
             use std::os::unix::process::CommandExt;
-            // Replace current process with shell
+            // Replace the current process with the shell so the user's exit
+            // returns them to their original parent.
             let err = cmd.exec();
             Err(err.into())
         } else {
-            // Windows: spawn and wait
             let status = cmd.status()?;
             if !status.success() {
                 anyhow::bail!("Shell exited with status: {:?}", status.code());
@@ -80,12 +73,11 @@ pub fn generate_env_script(shell: &str, env: &HashMap<String, String>) -> String
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(shell);
-    
+
     match shell_name {
         "bash" | "sh" | "zsh" => {
             let mut script = String::new();
             for (key, value) in env {
-                // Escape special characters
                 let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
                 script.push_str(&format!("export {}=\"{}\"\n", key, escaped));
             }
@@ -115,7 +107,6 @@ pub fn generate_env_script(shell: &str, env: &HashMap<String, String>) -> String
             script
         }
         _ => {
-            // Default to bash-style
             let mut script = String::new();
             for (key, value) in env {
                 let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
@@ -127,8 +118,8 @@ pub fn generate_env_script(shell: &str, env: &HashMap<String, String>) -> String
 }
 
 /// Write a PATH shim for each `(alias, command)` pair into a fresh tempdir
-/// and return the path.  The tempdir is *leaked* on purpose — its lifetime
-/// is the interactive subshell the caller is about to spawn, and the sweeper
+/// and return the path.  The tempdir is *leaked* on purpose: its lifetime is
+/// the interactive subshell the caller is about to spawn, and the sweeper
 /// reclaims it on the next `anvil shell` invocation.
 ///
 /// On POSIX the shim is a `chmod 755` shebang script; on Windows it's a
@@ -155,8 +146,8 @@ pub fn materialize_commands(commands: &HashMap<String, String>) -> Result<PathBu
 fn write_shim(dir: &Path, alias: &str, target: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    // `target` is already the expanded command string — e.g. a bare path or
-    // `"/Applications/... Painter" --flag`.  `exec "$@"` with the command
+    // `target` is already the expanded command string (e.g. a bare path or
+    // `"/Applications/... Painter" --flag`). `exec "$@"` with the command
     // embedded raw preserves any baked-in arguments and lets the user append
     // their own.
     let script = format!("#!/usr/bin/env bash\nexec {} \"$@\"\n", target);
@@ -192,7 +183,9 @@ pub fn sweep_stale_shims_in(root: &Path, ttl: std::time::Duration) {
 
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(name_str) = name.to_str() else { continue };
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
         if !name_str.starts_with(SHIM_DIR_PREFIX) {
             continue;
         }
@@ -202,7 +195,9 @@ pub fn sweep_stale_shims_in(root: &Path, ttl: std::time::Duration) {
             continue;
         }
         let Ok(mtime) = meta.modified() else { continue };
-        let Ok(age) = now.duration_since(mtime) else { continue };
+        let Ok(age) = now.duration_since(mtime) else {
+            continue;
+        };
         if age < ttl {
             continue;
         }

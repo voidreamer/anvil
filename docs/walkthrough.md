@@ -62,13 +62,13 @@ anvil info houdini-20.5
 
 ```bash
 anvil validate
-# ✓ blender
-# ✓ houdini
-# ✓ nuke
-# ✓ python
-# ✓ studio-blender-tools
-# ✓ studio-python
-# ✓ usd
+# OK blender
+# OK houdini
+# OK nuke
+# OK python
+# OK studio-blender-tools
+# OK studio-python
+# OK usd
 # All packages valid!
 ```
 
@@ -94,7 +94,7 @@ anvil env python-3.11 --json | python3 -c "import sys,json; print(json.load(sys.
 
 ### Dependency resolution
 
-Houdini depends on python-3.11 — both are resolved automatically:
+Houdini depends on python-3.11, and both are resolved automatically:
 
 ```bash
 anvil env houdini-20.5 | grep -E "PYTHON_VERSION|HOUDINI_VERSION"
@@ -171,7 +171,7 @@ anvil run python-3.11 -e MY_VAR=hello -- env | grep MY_VAR
 
 ```bash
 # Start a shell with packages loaded
-# (will replace the current process — type 'exit' to return)
+# (will replace the current process; type 'exit' to return)
 anvil shell python-3.11
 
 # Specify a different shell

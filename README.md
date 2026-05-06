@@ -135,7 +135,7 @@ only on the last hyphen when the suffix starts with a digit.
 Values resolve in this order: `${PACKAGE_ROOT}`, `${VERSION}`, `${NAME}`,
 `${PATHSEP}` (`:` on Unix / `;` on Windows), `${EXE_SUFFIX}` (`""` on Unix /
 `".exe"` on Windows), then any `${VAR}` set by previously resolved packages or
-the inherited environment, and finally `~/` — which expands at every path
+the inherited environment, and finally `~/`, which expands at every path
 segment, so `~/USD/bin${PATHSEP}~/USD/lib` works as expected. On Windows
 PowerShell sessions `~/` falls back to `USERPROFILE` when `HOME` is unset.
 
@@ -147,7 +147,7 @@ through.
 
 The `commands` map lets `anvil run` pick a program from the package definition.
 Values expand the same way as `environment` values, and can include baked in
-arguments with whitespace or tilde segments — anvil tokenises the value with
+arguments with whitespace or tilde segments. Anvil tokenises the value with
 POSIX shell rules, expands `~/` in every token, then runs the first token
 with the remaining tokens prepended to whatever the user passes after `--`.
 
@@ -167,7 +167,7 @@ commands:
 ```
 
 `anvil run nukex -- --view` therefore exec's
-`${NUKE_HOME}/Nuke${VERSION} --nukex --view` — packages can ship sane defaults
+`${NUKE_HOME}/Nuke${VERSION} --nukex --view`. Packages can ship sane defaults
 for every tool they expose without forcing users to memorise flag soup. Quoted
 substrings are preserved as a single argv element, so paths with spaces work
 without escaping the whole value.
